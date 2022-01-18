@@ -20,47 +20,10 @@
 #include "iomap.h"
 #include "spdif_hw.h"
 #include "ddr_mngr.h"
+#include "spdif.h"
 
+#include <linux/amlogic/media/vout/hdmi_tx/hdmi_tx_ext.h>
 #include <linux/amlogic/media/sound/aout_notify.h>
-
-#ifdef CONFIG_ARCH_MESON64_ODROID_COMMON
-#include <linux/platform_data/board_odroid.h>
-#else
-#define board_is_odroidn2()	(0)
-#endif
-
-/*#define G12A_PTM*/
-/*#define __PTM_SPDIF_INTERNAL_LB__*/
-
-unsigned int aml_spdif_ctrl_read(struct aml_audio_controller *actrl,
-	int stream, int index)
-{
-	unsigned int offset, reg;
-
-	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		offset = EE_AUDIO_SPDIFOUT_B_CTRL0 - EE_AUDIO_SPDIFOUT_CTRL0;
-		reg = EE_AUDIO_SPDIFOUT_CTRL0 + offset * index;
-	} else {
-		reg = EE_AUDIO_SPDIFIN_CTRL0;
-	}
-
-	return aml_audiobus_read(actrl, reg);
-}
-
-void aml_spdif_ctrl_write(struct aml_audio_controller *actrl,
-	int stream, int index, int val)
-{
-	unsigned int offset, reg;
-
-	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		offset = EE_AUDIO_SPDIFOUT_B_CTRL0 - EE_AUDIO_SPDIFOUT_CTRL0;
-		reg = EE_AUDIO_SPDIFOUT_CTRL0 + offset * index;
-	} else {
-		reg = EE_AUDIO_SPDIFIN_CTRL0;
-	}
-
-	aml_audiobus_write(actrl, reg, val);
-}
 
 void aml_spdifin_chnum_en(struct aml_audio_controller *actrl,
 	int index, bool is_enable)
@@ -91,11 +54,6 @@ void aml_spdif_enable(
 	} else {
 		aml_audiobus_update_bits(actrl,
 			EE_AUDIO_SPDIFIN_CTRL0, 1<<31, is_enable<<31);
-#ifdef __PTM_SPDIF_INTERNAL_LB__
-		if (index == 0)
-		aml_audiobus_update_bits(actrl,
-			EE_AUDIO_SPDIFIN_CTRL0, 0x3<<4, 0x1<<4);
-#endif
 	}
 }
 
@@ -236,6 +194,7 @@ void aml_spdif_fifo_ctrl(
 {
 	unsigned int toddr_type;
 	unsigned int frddr_type = spdifout_get_frddr_type(bitwidth);
+	unsigned int out_lane_mask = 0;
 
 	switch (bitwidth) {
 	case 8:
@@ -270,8 +229,20 @@ void aml_spdif_fifo_ctrl(
 		reg = EE_AUDIO_SPDIFOUT_CTRL0 + offset * index;
 		aml_audiobus_update_bits(actrl,
 			reg,
-			0x1<<29|0x1<<28|0x1<<20|0x1<<19|0xff<<4,
-			1<<29|1<<28|0<<20|0<<19|0x3<<4);
+			0x1 << 29 | 0x1 << 28 | 0x1 << 20 | 0x1 << 19,
+			1 << 29 | 1 << 28 | 0 << 20 | 0 << 19);
+
+		out_lane_mask = spdifout_get_lane_mask_version(index);
+		if (out_lane_mask == SPDIFOUT_LANE_MASK_V2)
+			aml_audiobus_update_bits(actrl,
+						 reg,
+						 0xffff,
+						 0x3);
+		else
+			aml_audiobus_update_bits(actrl,
+						 reg,
+						 0xff << 4,
+						 0x3 << 4);
 
 		offset = EE_AUDIO_SPDIFOUT_B_CTRL1 - EE_AUDIO_SPDIFOUT_CTRL1;
 		reg = EE_AUDIO_SPDIFOUT_CTRL1 + offset * index;
@@ -286,7 +257,7 @@ void aml_spdif_fifo_ctrl(
 			reg,
 			1<<4);
 	} else {
-		unsigned int spdifin_clk = 500000000;
+		unsigned int spdifin_clk = SPDIFIN_500M_HZ;
 
 		/* sysclk/rate/32(bit)/2(ch)/2(bmc) */
 		unsigned int counter_32k  = (spdifin_clk / (32000  * 64));
@@ -403,41 +374,34 @@ void aml_spdifout_get_aed_info(int spdifout_id,
 /* spdifout to hdmix ctrl
  * allow spdif out data to hdmitx
  */
-void spdifout_to_hdmitx_ctrl(int spdif_index)
+void spdifout_to_hdmitx_ctrl(int spdif_tohdmitxen_separated, int spdif_index)
 {
 	audiobus_write(EE_AUDIO_TOHDMITX_CTRL0,
-		1 << 31
-		| 1 << 3 /* spdif_clk_cap_inv */
+		1 << 3 /* spdif_clk_cap_inv */
 		| 0 << 2 /* spdif_clk_inv */
 		| spdif_index << 1 /* spdif_out */
 		| spdif_index << 0 /* spdif_clk */
 	);
-}
-#if 0
-static void spdifout_clk_ctrl(int spdif_id, bool is_enable)
-{
-	unsigned int offset, reg;
 
-	offset = EE_AUDIO_CLK_SPDIFOUT_B_CTRL - EE_AUDIO_CLK_SPDIFOUT_CTRL;
-	reg = EE_AUDIO_CLK_SPDIFOUT_CTRL + offset * spdif_id;
+	/* if tohdmitx_en is separated, need do:
+	 * step1: enable/disable clk
+	 * step2: enable/disable dat
+	 */
+	if (spdif_tohdmitxen_separated) {
+		audiobus_update_bits(EE_AUDIO_TOHDMITX_CTRL0,
+				     0x1 << 30, 0x1 << 30);
+	}
 
-	/* select : mpll 0, 24m, so spdif clk:6m */
-	audiobus_write(reg, is_enable << 31 | 0x0 << 24 | 0x3 << 0);
+	audiobus_update_bits(EE_AUDIO_TOHDMITX_CTRL0,
+			     0x1 << 31, 0x1 << 31);
 }
-#endif
+
 static void spdifout_fifo_ctrl(int spdif_id,
 	int fifo_id, int bitwidth, int channels, int lane_i2s)
 {
 	unsigned int frddr_type = spdifout_get_frddr_type(bitwidth);
 	unsigned int offset, reg, i, chmask = 0;
 	unsigned int swap_masks = 0;
-
-	/* spdif always masks two channel */
-	if (lane_i2s * 2 >= channels) {
-		pr_err("invalid lane(%d) and channels(%d)\n",
-				lane_i2s, channels);
-		return;
-	}
 
 	for (i = 0; i < channels; i++)
 		chmask |= (1 << i);
@@ -456,8 +420,18 @@ static void spdifout_fifo_ctrl(int spdif_id,
 	offset = EE_AUDIO_SPDIFOUT_B_CTRL0 - EE_AUDIO_SPDIFOUT_CTRL0;
 	reg = EE_AUDIO_SPDIFOUT_CTRL0 + offset * spdif_id;
 	audiobus_update_bits(reg,
-		0x1<<20|0x1<<19|0xff<<4,
-		0<<20|0<<19|chmask<<4);
+		0x1 << 20 | 0x1 << 19,
+		0 << 20 | 0 << 19);
+
+	if (spdifout_get_lane_mask_version(spdif_id) == SPDIFOUT_LANE_MASK_V2)
+		audiobus_update_bits(reg,
+				     0xffff,
+				     chmask);
+	else
+		audiobus_update_bits(reg,
+				     0xff << 4,
+				     chmask << 4);
+
 
 	offset = EE_AUDIO_SPDIFOUT_B_CTRL1 - EE_AUDIO_SPDIFOUT_CTRL1;
 	reg = EE_AUDIO_SPDIFOUT_CTRL1 + offset * spdif_id;
@@ -592,56 +566,20 @@ void spdif_set_channel_status_info(
 	reg = EE_AUDIO_SPDIFOUT_CTRL0 + offset * spdif_id;
 	audiobus_update_bits(reg, 0x1 << 24, 0x0 << 24);
 
+	/* channel status a */
 	offset = EE_AUDIO_SPDIFOUT_B_CHSTS0 - EE_AUDIO_SPDIFOUT_CHSTS0;
 	reg = EE_AUDIO_SPDIFOUT_CHSTS0 + offset * spdif_id;
 	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
 
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS1 - EE_AUDIO_SPDIFOUT_CHSTS1;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS1 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS2 - EE_AUDIO_SPDIFOUT_CHSTS2;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS2 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS3 - EE_AUDIO_SPDIFOUT_CHSTS3;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS3 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS4 - EE_AUDIO_SPDIFOUT_CHSTS4;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS4 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS5 - EE_AUDIO_SPDIFOUT_CHSTS5;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS5 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_l << 16 | chsts->chstat0_l);
-
+	/* channel status b */
 	offset = EE_AUDIO_SPDIFOUT_B_CHSTS6 - EE_AUDIO_SPDIFOUT_CHSTS6;
 	reg = EE_AUDIO_SPDIFOUT_CHSTS6 + offset * spdif_id;
 	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS7 - EE_AUDIO_SPDIFOUT_CHSTS7;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS7 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS8 - EE_AUDIO_SPDIFOUT_CHSTS8;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS8 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTS9 - EE_AUDIO_SPDIFOUT_CHSTS9;
-	reg = EE_AUDIO_SPDIFOUT_CHSTS9 + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTSA - EE_AUDIO_SPDIFOUT_CHSTSA;
-	reg = EE_AUDIO_SPDIFOUT_CHSTSA + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
-
-	offset = EE_AUDIO_SPDIFOUT_B_CHSTSB - EE_AUDIO_SPDIFOUT_CHSTSB;
-	reg = EE_AUDIO_SPDIFOUT_CHSTSB + offset * spdif_id;
-	audiobus_write(reg, chsts->chstat1_r << 16 | chsts->chstat0_r);
 }
 
-void spdifout_play_with_zerodata(unsigned int spdif_id, bool reenable)
+void spdifout_play_with_zerodata(unsigned int spdif_id,
+				 bool reenable,
+				 int reparated)
 {
 	pr_debug("%s, spdif id:%d enable:%d\n",
 		__func__,
@@ -669,26 +607,22 @@ void spdifout_play_with_zerodata(unsigned int spdif_id, bool reenable)
 
 		/* spdif clk */
 		//spdifout_clk_ctrl(spdif_id, true);
-
-		if (!board_is_odroidn2()) {
-			/* spdif to hdmitx */
-			spdifout_to_hdmitx_ctrl(spdif_id);
-		} else {
-			/* ODROID-N2 spdif_b only to hdmitx */
-			if (spdif_id == 1)
-				spdifout_to_hdmitx_ctrl(spdif_id);
-		}
+		/* spdif to hdmitx */
+		spdifout_to_hdmitx_ctrl(reparated, spdif_id);
 
 		/* spdif ctrl */
 		spdifout_fifo_ctrl(spdif_id,
 			frddr_index, bitwidth, runtime.channels, 0);
 
 		/* channel status info */
-		spdif_get_channel_status_info(&chsts, sample_rate);
+		iec_get_channel_status_info(&chsts,
+					    AUD_CODEC_TYPE_STEREO_PCM,
+					    sample_rate);
 		spdif_set_channel_status_info(&chsts, spdif_id);
 
 		/* notify hdmitx audio */
-		aout_notifier_call_chain(0x1, &substream);
+		aout_notifier_call_chain(AOUT_EVENT_IEC_60958_PCM,
+					&substream);
 
 		/* init frddr to output zero data. */
 		frddr_init_without_mngr(frddr_index, src0_sel);
@@ -730,5 +664,31 @@ void aml_spdif_out_reset(unsigned int spdif_id, int offset)
 
 	audiobus_update_bits(reg, val, val);
 	audiobus_update_bits(reg, val, 0);
+}
+
+void aml_spdifin_sample_mode_filter_en(void)
+{
+	audiobus_update_bits(EE_AUDIO_SPDIFIN_CTRL6, 0x1 << 12, 0x1 << 12);
+}
+
+int get_spdif_to_hdmitx_id(void)
+{
+	int val = audiobus_read(EE_AUDIO_TOHDMITX_CTRL0) & 0x3;
+	int ret = 0;
+
+	if (val == 3)
+		ret = 1;
+	else if (val == 0)
+		ret = 0;
+	else
+		pr_err("%s(), inval config\n", __func__);
+
+	return ret;
+}
+
+void set_spdif_to_hdmitx_id(int spdif_id)
+{
+	audiobus_update_bits(EE_AUDIO_TOHDMITX_CTRL0,
+			     0x3, spdif_id << 1 | spdif_id);
 }
 

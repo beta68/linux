@@ -20,6 +20,7 @@
 
 #include <sound/soc.h>
 #include "card_utils.h"
+#include "soft_locker.h"
 
 struct aml_card_info {
 	const char *name;
@@ -31,5 +32,7 @@ struct aml_card_info {
 	struct aml_dai cpu_dai;
 	struct aml_dai codec_dai;
 };
+
+struct soft_locker *aml_get_card_locker(struct snd_soc_card *card);
 
 #endif /* __AML_CARD_H_ */

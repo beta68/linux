@@ -531,7 +531,17 @@ static int audio_inskew_set_enum(
 	int id;
 
 	id = (ucontrol->value.enumerated.item[0] >> 16) & 0xffff;
+	if (id > 2) {
+		pr_warn("%s(), invalid id = %d\n", __func__, id);
+		return 0;
+	}
+
 	inskew = (int)(ucontrol->value.enumerated.item[0] & 0xffff);
+	if (inskew > 7) {
+		pr_warn("%s(), invalid inskew = %d\n", __func__, inskew);
+		return 0;
+	}
+
 	audio_inskew = inskew;
 	off_set = EE_AUDIO_TDMIN_B_CTRL - EE_AUDIO_TDMIN_A_CTRL;
 	reg_in = EE_AUDIO_TDMIN_A_CTRL + off_set * id;
@@ -925,18 +935,36 @@ void auge_toacodec_ctrl(int tdmout_id)
 		);
 }
 
-void auge_toacodec_ctrl_ext(int tdmout_id, int ch0_sel, int ch1_sel)
+void auge_toacodec_ctrl_ext(int tdmout_id,
+			    int ch0_sel,
+			    int ch1_sel,
+			    bool separate_toacodec_en)
 {
 	// TODO: check skew for tl1/sm1
 	audiobus_write(EE_AUDIO_TOACODEC_CTRL0,
-		1 << 31
-		| ((tdmout_id << 2) + ch1_sel) << 20 /* data 1 */
+		((tdmout_id << 2) + ch1_sel) << 20 /* data 1 */
 		| ((tdmout_id << 2) + ch0_sel) << 16 /* data 0 */
 		| tdmout_id << 12          /* lrclk */
 		| 1 << 9                   /* Bclk_cap_inv*/
 		| tdmout_id << 4           /* bclk */
 		| tdmout_id << 0           /* mclk */
 		);
+
+	/* if toacodec_en is separated, need do:
+	 * step1: enable/disable mclk
+	 * step2: enable/disable bclk
+	 * step3: enable/disable dat
+	 */
+	if (separate_toacodec_en) {
+		audiobus_update_bits(EE_AUDIO_TOACODEC_CTRL0,
+				     0x1 << 29,
+				     0x1 << 29);
+		audiobus_update_bits(EE_AUDIO_TOACODEC_CTRL0,
+				     0x1 << 30,
+				     0x1 << 30);
+	}
+	audiobus_update_bits(EE_AUDIO_TOACODEC_CTRL0, 0x1 << 31, 0x1 << 31);
+
 }
 
 void fratv_enable(bool enable)
