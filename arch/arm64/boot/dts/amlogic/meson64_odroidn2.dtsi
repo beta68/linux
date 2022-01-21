@@ -24,6 +24,10 @@
 		status = "okay";
 	};
 
+	vcodec_dec {
+ 		status = "disable";
+ 	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;

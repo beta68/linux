@@ -164,9 +164,9 @@
 	};
 
 	vcodec_dec {
-		compatible = "amlogic, vcodec-dec";
-		dev_name = "aml-vcodec-dec";
-		status = "okay";
+		//compatible = "amlogic, vcodec-dec";
+		//dev_name = "aml-vcodec-dec";
+		status = "disable";
 	};
 
 	securitykey {

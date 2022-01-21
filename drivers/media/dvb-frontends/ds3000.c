@@ -425,8 +425,6 @@ static int ds3000_set_voltage(struct dvb_frontend *fe,
 		break;
 	case SEC_VOLTAGE_OFF:
 		break;
-	case SEC_VOLTAGE_ON:
-		break;
 	}
 
 	ds3000_writereg(state, 0xa2, data);

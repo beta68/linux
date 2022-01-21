@@ -432,8 +432,6 @@ static int m88rs2000_set_voltage(struct dvb_frontend *fe,
 		break;
 	case SEC_VOLTAGE_OFF:
 		break;
-	case SEC_VOLTAGE_ON:
-		break;
 	}
 
 	m88rs2000_writereg(state, 0xb2, data);
