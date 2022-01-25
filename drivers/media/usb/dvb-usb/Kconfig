@@ -20,6 +20,15 @@ config DVB_USB_DEBUG
 	  Say Y if you want to enable debugging. See modinfo dvb-usb (and the
 	  appropriate drivers) for debug levels.
 
+config DVB_USB_TBS5580
+        tristate "Turbosight TBS5580 CI support"
+        depends on DVB_USB
+        select DVB_SI2183 if MEDIA_SUBDRV_AUTOSELECT
+        select MEDIA_TUNER_SI2157 if MEDIA_SUBDRV_AUTOSELECT
+        select MEDIA_TUNER_AV201X if MEDIA_SUBDRV_AUTOSELECT
+        help
+          Say Y here to support the Turbosight TBS5580 CI USB2 DVB-T/T2/C/C2/S/S2/S2x device
+
 config DVB_USB_DIB3000MC
 	tristate
 	depends on DVB_USB

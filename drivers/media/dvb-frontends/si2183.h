@@ -41,28 +41,26 @@ struct si2183_config {
 	/* TS clock inverted */
 	bool ts_clock_inv;
 
+	int  start_clk_mode;  //0 terrestrial mode 1: satellite mode
+	
 	/* TS clock gapped */
 	bool ts_clock_gapped;
-
-	/* 0 terrestrial mode 1: satellite mode */
-	u8  start_clk_mode;  
-
-	/* Tuner control pins */
-#define SI2183_MP_NOT_USED	1
-#define SI2183_MP_A		2
-#define SI2183_MP_B		3
-#define SI2183_MP_C		4
-#define SI2183_MP_D		5
-	int fef_pin;
-	bool fef_inv;
-	int agc_pin;
-	bool ter_agc_inv;
-	bool sat_agc_inv;
+	/*agc*/
+	u8 agc_mode;
 
 	/*rf switch*/
 	void (*RF_switch)(struct i2c_adapter * i2c,u8 rf_in,u8 flag);
 	/*rf no.*/
 	u8 rf_in;
+
+	void (*TS_switch)(struct i2c_adapter * i2c,u8 flag);
+	void (*LED_switch)(struct i2c_adapter * i2c,u8 flag);
+	//update the FW.
+	void (*write_properties) (struct i2c_adapter *i2c,u8 reg, u32 buf);
+	void (*read_properties) (struct i2c_adapter *i2c,u8 reg, u32 *buf);
+	// EEPROM access
+	void (*write_eeprom) (struct i2c_adapter *i2c,u8 reg, u8 buf);
+	void (*read_eeprom) (struct i2c_adapter *i2c,u8 reg, u8 *buf);
 };
 
 #endif

@@ -52,6 +52,25 @@
  */
 #define MAX_DELSYS	8
 
+
+/* Helper definitions to be used at frontend drivers */
+#define kHz 1000UL
+#define MHz 1000000UL
+
+
+struct ecp3_info
+{
+        __u8 reg;
+        __u32 data;
+};
+
+
+struct eeprom_info
+{
+        __u8 reg;
+        __u8 data;
+};
+
 /**
  * struct dvb_frontend_tune_settings - parameters to adjust frontend tuning
  *
@@ -89,6 +108,10 @@ struct dvb_tuner_info {
 	u32 frequency_min;
 	u32 frequency_max;
 	u32 frequency_step;
+
+	u32 frequency_min_hz;
+        u32 frequency_max_hz;
+        u32 frequency_step_hz;
 
 	u32 bandwidth_min;
 	u32 bandwidth_max;
@@ -468,6 +491,12 @@ struct dvb_frontend_ops {
 
 	int (*set_property)(struct dvb_frontend* fe, struct dtv_property* tvp);
 	int (*get_property)(struct dvb_frontend* fe, struct dtv_property* tvp);
+	
+	void(*spi_read)( struct dvb_frontend *fe,struct ecp3_info *ecp3inf);
+        void(*spi_write)( struct dvb_frontend *fe,struct ecp3_info *ecp3inf);
+        
+        void(*eeprom_read)( struct dvb_frontend *fe,struct eeprom_info *peepinf);
+        void(*eeprom_write)( struct dvb_frontend *fe,struct eeprom_info *peepinf);
 };
 
 #ifdef __DVB_CORE__
@@ -597,6 +626,9 @@ struct dtv_frontend_properties {
 
 	/* Multistream specifics */
 	u32			stream_id;
+
+    /* Physical Layer Scrambling specifics */
+        u32                     scrambling_sequence_index;
 
 	/* ATSC-MH specifics */
 	u8			atscmh_fic_ver;

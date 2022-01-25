@@ -22,7 +22,6 @@
 #define AV201X_H
 
 #include <linux/kconfig.h>
-#include <linux/i2c.h>
 #include <dvb_frontend.h>
 
 typedef enum av201x_id {

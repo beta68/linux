@@ -7,6 +7,7 @@ tda18271-objs := tda18271-maps.o tda18271-common.o tda18271-fe.o
 obj-$(CONFIG_MEDIA_TUNER_XC2028) += tuner-xc2028.o
 obj-$(CONFIG_MEDIA_TUNER_SIMPLE) += tuner-simple.o
 # tuner-types will be merged into tuner-simple, in the future
+obj-$(CONFIG_MEDIA_TUNER_AV201X) += av201x.o
 obj-$(CONFIG_MEDIA_TUNER_SIMPLE) += tuner-types.o
 obj-$(CONFIG_MEDIA_TUNER_MT20XX) += mt20xx.o
 obj-$(CONFIG_MEDIA_TUNER_TDA8290) += tda8290.o

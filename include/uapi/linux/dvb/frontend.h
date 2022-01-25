@@ -86,6 +86,11 @@ struct dvb_frontend_info {
 	enum fe_type type;	/* DEPRECATED. Use DTV_ENUM_DELSYS instead */
 	__u32      frequency_min;
 	__u32      frequency_max;
+	
+	__u32	   frequency_max_hz;
+	__u32	   frequency_min_hz;
+	__u32	   frequency_stepsize_hz;
+	
 	__u32      frequency_stepsize;
 	__u32      frequency_tolerance;
 	__u32      symbol_rate_min;
@@ -165,36 +170,51 @@ enum fe_spectral_inversion {
 };
 
 enum fe_code_rate {
-	FEC_NONE = 0,
-	FEC_1_2,
-	FEC_2_3,
-	FEC_3_4,
-	FEC_4_5,
-	FEC_5_6,
-	FEC_6_7,
-	FEC_7_8,
-	FEC_8_9,
-	FEC_AUTO,
-	FEC_3_5,
-	FEC_9_10,
-	FEC_2_5,
+        FEC_NONE = 0,
+        FEC_1_2,
+        FEC_2_3,
+        FEC_3_4,
+        FEC_4_5,
+        FEC_5_6,
+        FEC_6_7,
+        FEC_7_8,
+        FEC_8_9,
+        FEC_AUTO,
+        FEC_3_5,
+        FEC_9_10,
+        FEC_2_5,
+        FEC_1_4,
+        FEC_1_3,  
 };
 
 enum fe_modulation {
-	QPSK,
-	QAM_16,
-	QAM_32,
-	QAM_64,
-	QAM_128,
-	QAM_256,
-	QAM_AUTO,
-	VSB_8,
-	VSB_16,
-	PSK_8,
-	APSK_16,
-	APSK_32,
-	DQPSK,
-	QAM_4_NR,
+        QPSK,
+        QAM_16,
+        QAM_32,
+        QAM_64,
+        QAM_128,
+        QAM_256,
+        QAM_AUTO,
+        VSB_8,
+        VSB_16,
+        PSK_8,
+        APSK_16,
+        APSK_32,
+        DQPSK,
+        QAM_4_NR,
+        QAM_512,
+        QAM_1024,
+        QAM_4096,
+        APSK_64,
+        APSK_128,
+        APSK_256,
+        APSK_8L,
+        APSK_16L,
+        APSK_32L,
+        APSK_64L,
+        APSK_128L,
+        APSK_256L,
+        APSK_1024,
 };
 
 enum fe_transmit_mode {
@@ -381,11 +401,25 @@ enum fe_pilot {
 	PILOT_AUTO,
 };
 
+/**
+ * enum fe_rolloff - Rolloff factor
+ * @ROLLOFF_35:         Roloff factor: α=35%
+ * @ROLLOFF_20:         Roloff factor: α=20%
+ * @ROLLOFF_25:         Roloff factor: α=25%
+ * @ROLLOFF_AUTO:       Auto-detect the roloff factor.
+ *
+ * .. note:
+ *
+ *    Roloff factor of 35% is implied on DVB-S. On DVB-S2, it is default.
+ */
 enum fe_rolloff {
-	ROLLOFF_35, /* Implied value in DVB-S, default for DVB-S2 */
-	ROLLOFF_20,
-	ROLLOFF_25,
-	ROLLOFF_AUTO,
+        ROLLOFF_35,
+        ROLLOFF_20,
+        ROLLOFF_25,
+        ROLLOFF_AUTO,
+        ROLLOFF_15,
+        ROLLOFF_10,
+        ROLLOFF_5,
 };
 
 enum fe_delivery_system {
@@ -408,6 +442,7 @@ enum fe_delivery_system {
 	SYS_DVBT2,
 	SYS_TURBO,
 	SYS_DVBC_ANNEX_C,
+	SYS_DVBC2,
 #ifdef CONFIG_AMLOGIC_DVB_COMPAT
 	SYS_ANALOG
 #endif

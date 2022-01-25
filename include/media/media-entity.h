@@ -156,6 +156,14 @@ struct media_link {
 	bool is_backlink;
 };
 
+
+enum media_pad_signal_type {
+        PAD_SIGNAL_DEFAULT = 0,
+        PAD_SIGNAL_ANALOG,
+        PAD_SIGNAL_DV,
+        PAD_SIGNAL_AUDIO,
+};
+
 /**
  * struct media_pad - A media pad graph object.
  *
@@ -170,6 +178,7 @@ struct media_pad {
 	struct media_gobj graph_obj;	/* must be first field in struct */
 	struct media_entity *entity;
 	u16 index;
+	enum media_pad_signal_type sig_type;
 	unsigned long flags;
 };
 
