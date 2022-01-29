@@ -28,8 +28,7 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/platform_device.h>
-#include <linux/amlogic/power_domain.h>
-#include <dt-bindings/power/amlogic,pd.h>
+#include <linux/amlogic/power_ctrl.h>
 #include "csi.h"
 
 #define HHI_CSI_PHY         0xff63c000
@@ -265,12 +264,12 @@ static void powerup_csi_analog(struct csi_parm_s *info)
 
 	iounmap(base_addr);
 
-	power_domain_switch(PM_CSI, PWR_ON);
+	power_ctrl_mempd0(1, 3, 6);
 }
 
 static void powerdown_csi_analog(void)
 {
-	power_domain_switch(PM_CSI, PWR_OFF);
+	power_ctrl_mempd0(0, 3, 6);
 }
 
 static void init_am_mipi_phy(struct csi_parm_s *info)

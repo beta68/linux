@@ -17,9 +17,14 @@
 #ifndef __EFFECTS_V2_H__
 #define __EFFECTS_V2_H__
 
-int check_aed_version(void);
-int card_add_effect_v2_kcontrols(struct snd_soc_card *card);
-int get_aed_dst(void);
-bool is_aed_reserve_frddr(void);
+enum {
+	VERSION1 = 0,
+	VERSION2,
+	VERSION3
+};
+
+extern int check_aed_version(void);
+extern int card_add_effect_v2_kcontrols(struct snd_soc_card *card);
+extern int get_aed_dst(void);
 
 #endif

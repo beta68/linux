@@ -3105,7 +3105,6 @@ static int gc2145_open(struct file *file)
 
 	if (retval) {
 		vm_deinit_resource(&(dev->vminfo));
-		kfree(fh);
 		return retval;
 	}
 

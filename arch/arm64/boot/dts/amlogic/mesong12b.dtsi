@@ -1403,7 +1403,6 @@
 			"clk_hevcb_mux";
 	};
 
-
 	amvideocap {
 		compatible = "amlogic, amvideocap";
 		dev_name = "amvideocap.0";

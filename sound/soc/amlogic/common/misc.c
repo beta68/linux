@@ -24,33 +24,6 @@
 #include <linux/amlogic/media/frame_provider/tvin/tvin.h>
 #endif
 
-bool audio_debug;
-
-static const char *const audio_debug_text[] = {
-	"off",
-	"on"
-};
-
-const struct soc_enum audio_debug_enum =
-	SOC_ENUM_SINGLE(SND_SOC_NOPM, 0, ARRAY_SIZE(audio_debug_text),
-			audio_debug_text);
-
-int audio_debug_get(struct snd_kcontrol *kcontrol,
-		    struct snd_ctl_elem_value *ucontrol)
-{
-	ucontrol->value.integer.value[0] = audio_debug;
-
-	return 0;
-}
-
-int audio_debug_put(struct snd_kcontrol *kcontrol,
-		    struct snd_ctl_elem_value *ucontrol)
-{
-	audio_debug = ucontrol->value.integer.value[0];
-
-	return 0;
-}
-
 static const char *const audio_is_stable[] = {
 	"false",
 	"true"
@@ -213,13 +186,6 @@ static const char * const hdmi_in_audio_packet[] = {
 	"MAS"
 };
 
-static const char * const hdmi_in_bitwidth[] = {
-	"REFER_TO_HEADER",
-	"16bit",
-	"20bit",
-	"24bit"
-};
-
 const struct soc_enum hdmi_in_status_enum[] = {
 	SOC_ENUM_SINGLE(SND_SOC_NOPM, 0, ARRAY_SIZE(audio_is_stable),
 			audio_is_stable),
@@ -230,21 +196,16 @@ const struct soc_enum hdmi_in_status_enum[] = {
 	SOC_ENUM_SINGLE(SND_SOC_NOPM, 0, ARRAY_SIZE(hdmi_in_format),
 			hdmi_in_format),
 	SOC_ENUM_SINGLE(SND_SOC_NOPM, 0, ARRAY_SIZE(hdmi_in_audio_packet),
-			hdmi_in_audio_packet),
-	SOC_ENUM_SINGLE(SND_SOC_NOPM, 0, ARRAY_SIZE(hdmi_in_bitwidth),
-			hdmi_in_bitwidth)
+			hdmi_in_audio_packet)
 };
 
 int get_hdmiin_audio_stable(void)
 {
 	struct rx_audio_stat_s aud_sts;
-	bool audio_packet = 0;
 
 	rx_get_audio_status(&aud_sts);
 
-	audio_packet = (aud_sts.aud_rcv_packet == 0) ? 0 : 1;
-
-	return (aud_sts.aud_stb_flag & audio_packet);
+	return (aud_sts.aud_rcv_packet == 0) ? 0 : 1;
 }
 
 int aml_get_hdmiin_audio_stable(

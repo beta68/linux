@@ -115,9 +115,6 @@ static int lcd_vmode_is_mached(int index)
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 	struct lcd_config_s *pconf;
 
-	if (!lcd_drv)
-		return -1;
-
 	pconf = lcd_drv->lcd_config;
 	if ((pconf->lcd_basic.h_active == lcd_vmode_info[index].width) &&
 		(pconf->lcd_basic.v_active == lcd_vmode_info[index].height))
@@ -203,9 +200,6 @@ static void lcd_vmode_vinfo_update(enum vmode_e mode)
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 	struct lcd_config_s *pconf;
 
-	if (!lcd_drv)
-		return;
-
 	pconf = lcd_drv->lcd_config;
 	lcd_output_vmode = lcd_get_vmode(mode);
 	info = &lcd_vmode_info[lcd_output_vmode];
@@ -280,9 +274,6 @@ static enum vmode_e lcd_validate_vmode(char *mode)
 	int ret;
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return -1;
-
 	if (lcd_vout_serve_bypass) {
 		LCDPR("vout_serve bypass\n");
 		return VMODE_MAX;
@@ -317,8 +308,6 @@ static struct vinfo_s *lcd_get_current_info(void)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return NULL;
 	return lcd_drv->lcd_info;
 }
 
@@ -326,9 +315,6 @@ static int lcd_set_current_vmode(enum vmode_e mode)
 {
 	int ret = 0;
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
-
-	if (!lcd_drv)
-		return -1;
 
 	if (lcd_vout_serve_bypass) {
 		LCDPR("vout_serve bypass\n");
@@ -395,9 +381,6 @@ static int lcd_vout_disable(enum vmode_e cur_vmod)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return -1;
-
 	lcd_drv->lcd_status &= ~LCD_STATUS_VMODE_ACTIVE;
 
 	return 0;
@@ -408,9 +391,6 @@ static int lcd_vout_set_state(int index)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return -1;
-
 	lcd_vout_state |= (1 << index);
 	lcd_drv->viu_sel = index;
 
@@ -420,9 +400,6 @@ static int lcd_vout_set_state(int index)
 static int lcd_vout_clr_state(int index)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
-
-	if (!lcd_drv)
-		return -1;
 
 	lcd_vout_state &= ~(1 << index);
 	if (lcd_drv->viu_sel == index)
@@ -470,9 +447,6 @@ static int lcd_framerate_automation_set_mode(void)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return -1;
-
 	LCDPR("%s\n", __func__);
 
 	/* update interface timing */
@@ -506,9 +480,6 @@ static int lcd_set_vframe_rate_hint(int duration)
 	unsigned int duration_num = 60, duration_den = 1;
 	struct lcd_vframe_match_s *vtable = lcd_vframe_match_table_1;
 	int fps, i, n;
-
-	if (!lcd_drv)
-		return -1;
 
 	if (lcd_vout_serve_bypass) {
 		LCDPR("vout_serve bypass\n");
@@ -574,9 +545,6 @@ static int lcd_set_vframe_rate_end_hint(void)
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 	struct vinfo_s *info;
 
-	if (!lcd_drv)
-		return -1;
-
 	if (lcd_vout_serve_bypass) {
 		LCDPR("vout_serve bypass\n");
 		return 0;
@@ -618,9 +586,6 @@ static int lcd_set_vframe_rate_policy(int policy)
 #ifdef CONFIG_AMLOGIC_VOUT_SERVE
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return -1;
-
 	if (lcd_vout_serve_bypass) {
 		LCDPR("vout_serve bypass\n");
 		return 0;
@@ -636,9 +601,6 @@ static int lcd_get_vframe_rate_policy(void)
 #ifdef CONFIG_AMLOGIC_VOUT_SERVE
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
 
-	if (!lcd_drv)
-		return 0;
-
 	return lcd_drv->fr_auto_policy;
 #else
 	return 0;
@@ -649,9 +611,6 @@ static int lcd_get_vframe_rate_policy(void)
 static int lcd_suspend(void)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
-
-	if (!lcd_drv)
-		return -1;
 
 	mutex_lock(&lcd_drv->power_mutex);
 	aml_lcd_notifier_call_chain(LCD_EVENT_POWER_OFF, NULL);
@@ -664,9 +623,6 @@ static int lcd_suspend(void)
 static int lcd_resume(void)
 {
 	struct aml_lcd_drv_s *lcd_drv = aml_lcd_get_driver();
-
-	if (!lcd_drv)
-		return -1;
 
 	if ((lcd_drv->lcd_status & LCD_STATUS_VMODE_ACTIVE) == 0)
 		return 0;
@@ -726,9 +682,6 @@ static void lcd_vinfo_update_default(void)
 	unsigned int h_active, v_active, h_total, v_total;
 	char *mode;
 
-	if (!lcd_drv)
-		return;
-
 	if (lcd_drv->lcd_info == NULL) {
 		LCDERR("no lcd_info exist\n");
 		return;
@@ -771,7 +724,7 @@ void lcd_tv_vout_server_init(void)
 
 void lcd_tv_vout_server_remove(void)
 {
-	vout_unregister_server(&lcd_vout_server);
+	vout_register_server(&lcd_vout_server);
 }
 
 /* ************************************************** *
@@ -1632,6 +1585,8 @@ int lcd_tv_remove(struct device *dev)
 		break;
 	}
 
+	kfree(lcd_drv->lcd_info);
+	lcd_drv->lcd_info = NULL;
 	return 0;
 }
 

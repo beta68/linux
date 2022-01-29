@@ -94,8 +94,6 @@
 #define osd_tprintk(...)
 
 #define FREE_SCALE_MAX_WIDTH    1920
-#define WAIT_CNT_MAX            20
-
 struct hw_para_s osd_hw;
 static DEFINE_MUTEX(osd_mutex);
 static DECLARE_WAIT_QUEUE_HEAD(osd_vsync_wq);
@@ -1530,9 +1528,6 @@ static int osd_wait_buf_ready_combine(struct layer_fence_map_s *layer_map)
 	if (layer_map->in_fd <= 0)
 		return -1;
 	buf_ready_fence = layer_map->in_fence;
-	if (buf_ready_fence == NULL) {
-		return -1;/* no fence ,output directly. */
-	}
 	ret = osd_wait_fenceobj(buf_ready_fence, 4000);
 	if (ret < 0)
 		osd_log_err("osd%d: Sync Fence wait error:%d\n",
@@ -4009,30 +4004,26 @@ void osd_set_hold_line(u32 index, int hold_line)
 int osd_get_capbility(u32 index)
 {
 	u32 capbility = 0;
-	u32 afbc = osd_hw.osd_meson_dev.afbc_type;
 
 	if (osd_hw.osd_meson_dev.osd_ver == OSD_HIGH_ONE) {
 		if (index == OSD1)
 			capbility |= OSD_LAYER_ENABLE | OSD_FREESCALE
 				| OSD_UBOOT_LOGO | OSD_ZORDER | OSD_VIU1
-				| OSD_PRIMARY | (afbc ? OSD_AFBC : 0);
+				| OSD_PRIMARY;
 		else if (index < osd_hw.osd_meson_dev.viu1_osd_count)
 			capbility |= OSD_LAYER_ENABLE | OSD_FREESCALE |
-				OSD_ZORDER | OSD_VIU1 |
-				(afbc ? OSD_AFBC : 0);
+				OSD_ZORDER | OSD_VIU1;
 		else if (index == osd_hw.osd_meson_dev.viu2_index)
 			capbility |= OSD_LAYER_ENABLE | OSD_VIU2;
 	} else if (osd_hw.osd_meson_dev.osd_ver == OSD_NORMAL) {
 		if (index == OSD1)
 			capbility |= OSD_LAYER_ENABLE | OSD_FREESCALE
-				| OSD_VIU1 | (afbc ? OSD_AFBC : 0);
+				| OSD_VIU1;
 		else if (index == OSD2)
 			capbility |= OSD_LAYER_ENABLE |
 				OSD_HW_CURSOR | OSD_FREESCALE
-				| OSD_UBOOT_LOGO | OSD_VIU1 |
-				(afbc ? OSD_AFBC : 0);
+				| OSD_UBOOT_LOGO | OSD_VIU1;
 	}
-
 	return capbility;
 }
 
@@ -6388,7 +6379,6 @@ static void generate_blend_din_table(struct hw_osd_blending_s *blending)
 		blending->din_reoder_sel;
 }
 
-#ifdef FREESCAL_CHECK
 static bool is_freescale_para_changed(u32 index)
 {
 	static int first[HW_OSD_COUNT - 1] = {1};
@@ -6413,7 +6403,6 @@ static bool is_freescale_para_changed(u32 index)
 	first[index] = 0;
 	return freescale_update;
 }
-#endif
 
 static int osd_setting_blending_scope(u32 index)
 {
@@ -8521,11 +8510,11 @@ static int osd_setting_order(u32 output_index)
 	struct layer_blend_reg_s *blend_reg;
 	struct hw_osd_blending_s *blending;
 	u32 osd_count = osd_hw.osd_meson_dev.viu1_osd_count;
+	bool update = false;
 	int line1;
 	int line2;
 	int active_begin_line;
-	int vinfo_height;
-	u32 val, wait_cnt = 0;
+	u32 val;
 
 	blending = &osd_blending;
 	blend_reg = &(blending->blend_reg);
@@ -8567,20 +8556,11 @@ static int osd_setting_order(u32 output_index)
 	active_begin_line = get_active_begin_line(VIU1);
 	line1 = get_enter_encp_line(VIU1);
 	/* if nearly vsync signal, wait vsync here */
-	vinfo_height = osd_hw.field_out_en[output_index] ?
-		(osd_hw.vinfo_height[output_index] * 2) :
-		osd_hw.vinfo_height[output_index];
-	while (line1 >= vinfo_height + active_begin_line *
-			(100 - line_threshold) / 100 ||
-			line1 <= active_begin_line * line_threshold / 100) {
+	if (line1 <= active_begin_line * line_threshold / 100) {
 		osd_log_dbg(MODULE_RENDER,
 			"enter osd_setting_order:encp line=%d\n",
 			line1);
-		/* 0.5ms */
-		usleep_range(500, 600);
-		wait_cnt++;
-		if (wait_cnt >= WAIT_CNT_MAX)
-			break;
+		osd_wait_vsync_hw_viu1();
 		line1 = get_enter_encp_line(VIU1);
 	}
 	spin_lock_irqsave(&osd_lock, lock_flags);
@@ -8590,11 +8570,11 @@ static int osd_setting_order(u32 output_index)
 		if (osd_hw.enable[i]) {
 			struct hw_osd_reg_s *osd_reg = &hw_osd_reg_array[i];
 
-			/* update = is_freescale_para_changed(i); */
+			update = is_freescale_para_changed(i);
 			if (!osd_hw.osd_afbcd[i].enable)
 				canvas_config(osd_hw.fb_gem[i].canvas_idx,
 					osd_hw.fb_gem[i].addr,
-					CANVAS_ALIGNED(osd_hw.fb_gem[i].width),
+					osd_hw.fb_gem[i].width,
 					osd_hw.fb_gem[i].height,
 					CANVAS_ADDR_NOWRAP,
 					CANVAS_BLKMODE_LINEAR);
@@ -8625,12 +8605,13 @@ static int osd_setting_order(u32 output_index)
 			osd_hw.reg[DISP_GEOMETRY].update_func(i);
 			osd_hw.reg[OSD_GBL_ALPHA].update_func(i);
 			osd_hw.reg[DISP_OSD_REVERSE].update_func(i);
-			osd_set_scan_mode(i);
 			osd_hw.reg[OSD_FREESCALE_COEF].update_func(i);
-			osd_hw.reg[DISP_FREESCALE_ENABLE]
+			if (update || osd_update_window_axis) {
+				osd_set_scan_mode(i);
+				osd_hw.reg[DISP_FREESCALE_ENABLE]
 				.update_func(i);
-			if (osd_update_window_axis)
 				osd_update_window_axis = false;
+			}
 			if (osd_hw.premult_en[i] && !osd_hw.blend_bypass)
 				VSYNCOSD_WR_MPEG_REG_BITS(
 				osd_reg->osd_mali_unpack_ctrl, 0x1, 28, 1);

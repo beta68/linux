@@ -50,8 +50,8 @@
 
 #include <linux/amlogic/media/codec_mm/codec_mm.h>
 
+#include "../../media_modules/stream_input/amports/amports_priv.h"
 #include "amvideocap_priv.h"
-#include "video_priv.h"
 /*
 #if MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON6
 #include <mach/mod_gate.h>
@@ -699,39 +699,36 @@ static int amvideocap_capture_one_frame_wait(
 	int ret = 0;
 	struct amvideocap_req_data reqdata;
 	struct amvideocap_req req;
+	priv->sended_end_frame_cap_req = -EAGAIN;
 	priv->state = AMVIDEOCAP_STATE_ON_CAPTURE;
-
-	if (priv->want.at_flags == CAP_FLAG_AT_END) {
-		do {
-			if (ret == -EBUSY)
-				usleep_range(3000, 5000);
-			ret = ext_register_end_frame_callback(NULL);
-
-			if (ret == 0 && priv->state == AMVIDEOCAP_STATE_ON_CAPTURE) {
+	do {
+		if (ret == -EAGAIN)
+			usleep_range(500, 1000);
+		if (priv->want.at_flags == CAP_FLAG_AT_END) {
+			if (priv->sended_end_frame_cap_req == -EAGAIN) {
 				reqdata.privdata = priv;
-				req.callback = amvideocap_capture_one_frame;
+				req.callback =
+					amvideocap_capture_one_frame;
 				req.data = (unsigned long)&reqdata;
 				req.at_flags = priv->want.at_flags;
 				req.timestamp_ms = priv->want.timestamp_ms;
-				ret = ext_register_end_frame_callback(&req);
-			}
-		} while ((ret == -EBUSY) && time_before(jiffies, timeout));
-
-		if (ret == -EBUSY) {
-			req.callback = NULL;
-			ext_register_end_frame_callback(&req);
-			ret = -EAGAIN;
+				priv->sended_end_frame_cap_req =
+					ext_register_end_frame_callback(&req);
+				ret = -EAGAIN;
+			} else
+				if (priv->sended_end_frame_cap_req == -ENODATA ||
+							priv->state == AMVIDEOCAP_STATE_ERROR) {
+				ret = -ENODATA;
+			} else
+				if (priv->state == AMVIDEOCAP_STATE_FINISHED_CAPTURE)
+					ret = 0;
+		} else {
+			ret = amvideocap_capture_one_frame(priv, NULL, 0);
+			pr_debug("amvideocap_capture_one_frame_wait ret=%d\n",
+					ret);
 		}
-
-		if (ret == 0)
-			ret = (priv->state == AMVIDEOCAP_STATE_FINISHED_CAPTURE) ? 0 : -EAGAIN;
-	}
-	else
-		ret = amvideocap_capture_one_frame(priv, NULL, 0);
-
-	pr_debug("amvideocap_capture_one_frame ret=%d\n",
-			ret);
-
+	} while (ret == -EAGAIN && time_before(jiffies, timeout));
+	ext_register_end_frame_callback(NULL);	/*del req */
 	return ret;
 }
 

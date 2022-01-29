@@ -14,43 +14,21 @@
  * more details.
  *
  */
+#include <sound/pcm.h>
 
 #include <linux/amlogic/media/sound/aout_notify.h>
-#include <linux/amlogic/media/vout/hdmi_tx/hdmi_tx_ext.h>
+
 #include "sharebuffer.h"
 #include "ddr_mngr.h"
 
 #include "spdif_hw.h"
-#include "earc.h"
-
-struct samesrc_ops *samesrc_ops_table[SHAREBUFFER_SRC_NUM];
-
-struct samesrc_ops *get_samesrc_ops(enum sharebuffer_srcs src)
-{
-	if (src >= SHAREBUFFER_SRC_NUM)
-		return NULL;
-
-	return samesrc_ops_table[src];
-}
-
-int register_samesrc_ops(enum sharebuffer_srcs src, struct samesrc_ops *ops)
-{
-	if (src >= SHAREBUFFER_SRC_NUM)
-		return -EINVAL;
-
-	samesrc_ops_table[src] = ops;
-	return 0;
-}
 
 static int sharebuffer_spdifout_prepare(struct snd_pcm_substream *substream,
-	struct frddr *fr, int spdif_id, int lane_i2s,
-	enum aud_codec_types type, int separated)
+	struct frddr *fr, int spdif_id, int lane_i2s)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int bit_depth;
 	struct iec958_chsts chsts;
-	struct snd_pcm_substream substream_tmp;
-	struct snd_pcm_runtime runtime_tmp;
 
 	bit_depth = snd_pcm_format_width(runtime->format);
 
@@ -62,20 +40,12 @@ static int sharebuffer_spdifout_prepare(struct snd_pcm_substream *substream,
 		lane_i2s);
 
 	/* spdif to hdmitx */
-	spdifout_to_hdmitx_ctrl(separated, spdif_id);
+	spdifout_to_hdmitx_ctrl(spdif_id);
 	/* check and set channel status */
-	iec_get_channel_status_info(&chsts,
-				    type, runtime->rate);
+	spdif_get_channel_status_info(&chsts, runtime->rate);
 	spdif_set_channel_status_info(&chsts, spdif_id);
-
-	/* for samesource case, always 2ch substream to hdmitx */
-	substream_tmp.runtime = &runtime_tmp;
-	memcpy((void *)&runtime_tmp, (void *)(substream->runtime),
-	       sizeof(struct snd_pcm_runtime));
-	runtime_tmp.channels = 2;
-
 	/* notify hdmitx audio */
-	aout_notifier_call_chain(AOUT_EVENT_IEC_60958_PCM, &substream_tmp);
+	aout_notifier_call_chain(0x1, substream);
 
 	return 0;
 }
@@ -101,89 +71,62 @@ static int sharebuffer_spdifout_free(struct snd_pcm_substream *substream,
 
 void sharebuffer_enable(int sel, bool enable, bool reenable)
 {
-	if (sel < SHAREBUFFER_TDMA) {
+	if (sel < 0) {
 		pr_err("Not support same source\n");
 		return;
-	} else if (sel <= SHAREBUFFER_TDMC) {
+	} else if (sel < 3) {
 		// TODO: same with tdm
-	} else if (sel <= SHAREBUFFER_SPDIFB) {
+	} else if (sel < 5) {
 		/* same source with spdif a/b */
 		spdifout_enable(sel - 3, enable, reenable);
-	} else if (sel == SHAREBUFFER_EARCTX) {
-		aml_earctx_enable(enable);
 	}
 }
 
-void *p_frddr;
-int same_src_on;
-
 int sharebuffer_prepare(struct snd_pcm_substream *substream,
-			void *pfrddr,
-			int samesource_sel,
-			int lane_i2s,
-			enum aud_codec_types type,
-			int share_lvl,
-			int separated)
+	void *pfrddr, int samesource_sel, int lane_i2s, int offset)
 {
 	struct frddr *fr = (struct frddr *)pfrddr;
 
 	/* each module prepare, clocks and controls */
-	if (samesource_sel < SHAREBUFFER_TDMA) {
+	if (samesource_sel < 0) {
 		pr_err("Not support same source\n");
 		return -EINVAL;
-	} else if (samesource_sel <= SHAREBUFFER_TDMC) {
+	} else if (samesource_sel < 3) {
 		// TODO: same with tdm
-	} else if (samesource_sel <= SHAREBUFFER_SPDIFB) {
+	} else if (samesource_sel < 5) {
 		/* same source with spdif a/b */
 		sharebuffer_spdifout_prepare(substream,
-			fr, samesource_sel - 3,
-			lane_i2s, type, separated);
-	} else if (samesource_sel == SHAREBUFFER_EARCTX) {
-		sharebuffer_earctx_prepare(substream, fr, type);
-		if (!aml_get_earctx_enable())
-			return 0;
+			fr, samesource_sel - 3, lane_i2s);
 	}
 
 	/* frddr, share buffer, src_sel1 */
-	aml_frddr_select_dst_ss(fr, samesource_sel, share_lvl, true);
-	p_frddr = pfrddr;
-	same_src_on = 1;
+	aml_frddr_select_dst_ss(fr, samesource_sel, 1, true);
 
 	return 0;
 }
 
 int sharebuffer_free(struct snd_pcm_substream *substream,
-	void *pfrddr, int samesource_sel, int share_lvl)
+	void *pfrddr, int samesource_sel)
 {
 	struct frddr *fr = (struct frddr *)pfrddr;
 
 	/* each module prepare, clocks and controls */
-	if (samesource_sel < SHAREBUFFER_TDMA) {
+	if (samesource_sel < 0) {
 		pr_err("Not support same source\n");
 		return -EINVAL;
-	} else if (samesource_sel <= SHAREBUFFER_TDMC) {
+	} else if (samesource_sel < 3) {
 		// TODO: same with tdm
-	} else if (samesource_sel <= SHAREBUFFER_SPDIFB) {
+	} else if (samesource_sel < 5) {
 		/* same source with spdif a/b */
 		sharebuffer_spdifout_free(substream, fr, samesource_sel - 3);
-	} else if (samesource_sel == SHAREBUFFER_EARCTX) {
-		//TODO: earxtx free
 	}
 
 	/* frddr, share buffer, src_sel1 */
-	aml_frddr_select_dst_ss(fr, samesource_sel, share_lvl, false);
-	same_src_on = 0;
+	aml_frddr_select_dst_ss(fr, samesource_sel, 1, false);
 
 	return 0;
 }
 
-int release_spdif_same_src(struct snd_pcm_substream *substream)
-{
-	if (same_src_on)
-		sharebuffer_free(substream, p_frddr, 3, 1);
-
-	return 0;
-}
 
 int sharebuffer_trigger(int cmd, int samesource_sel, bool reenable)
 {
@@ -208,15 +151,13 @@ int sharebuffer_trigger(int cmd, int samesource_sel, bool reenable)
 void sharebuffer_get_mclk_fs_ratio(int samesource_sel,
 	int *pll_mclk_ratio, int *mclk_fs_ratio)
 {
-	if (samesource_sel < SHAREBUFFER_TDMA) {
+	if (samesource_sel < 0) {
 		pr_err("Not support same source\n");
-	} else if (samesource_sel <= SHAREBUFFER_TDMC) {
+	} else if (samesource_sel < 3) {
 		// TODO: same with tdm
-	} else if (samesource_sel <= SHAREBUFFER_SPDIFB) {
+	} else if (samesource_sel < 5) {
 		/* spdif a/b */
 		*pll_mclk_ratio = 4;
 		*mclk_fs_ratio = 128;
-	} else if (samesource_sel == SHAREBUFFER_EARCTX) {
-		//TODO: earxtx
 	}
 }

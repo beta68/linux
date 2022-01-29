@@ -254,7 +254,6 @@
 		/* max 0xff, each bit for one channel */
 		channel_mask = <0x3>;
 	};
-
 	auge_sound {
 		compatible = "amlogic, g12a-sound-card";
 		aml-audio-card,name = "AML-AUGESOUND";
@@ -419,6 +418,7 @@
 };
 
 &audiobus {
+	/* tdmc to internal DAC output, no pinmux */
 	aml_tdmb: tdmb {
 		compatible = "amlogic, g12a-snd-tdmb";
 		#sound-dai-cells = <0>;

@@ -1179,7 +1179,6 @@ bool dip_event_unreg_chst(unsigned int ch)
 	case eDI_TOP_STATE_REG_STEP1_P1:
 		/*wait:*/
 		cnt = 0;
-		chst2 = dip_chst_get(ch);
 		while (chst2 == eDI_TOP_STATE_REG_STEP1_P1 || cnt < 5) {
 			task_send_ready();
 			usleep_range(3000, 3001);
@@ -1522,7 +1521,7 @@ const char *dip_chst_get_name_curr(unsigned int ch)
 
 	chst = dip_chst_get(ch);
 
-	if (chst < ARRAY_SIZE(di_top_state_name))
+	if (chst < sizeof(di_top_state_name))
 		p = di_top_state_name[chst];
 
 	return p;
@@ -1532,7 +1531,7 @@ const char *dip_chst_get_name(enum eDI_TOP_STATE chst)
 {
 	const char *p = "";
 
-	if (chst < ARRAY_SIZE(di_top_state_name))
+	if (chst < sizeof(di_top_state_name))
 		p = di_top_state_name[chst];
 
 	return p;
@@ -1687,7 +1686,7 @@ void do_talbe_cmd(struct do_table_s *pdo, enum eDO_TABLE_CMD cmd)
 		if (pdo->op_crr <= K_DO_TABLE_ID_STOP) {
 			/*do nothing*/
 		} else {
-			pdo->op_lst = pdo->op_crr;
+			pdo->op_crr = pdo->op_lst;
 			pdo->op_crr = K_DO_TABLE_ID_PAUSE;
 			pdo->do_pause = true;
 		}
@@ -1721,10 +1720,8 @@ void do_table_working(struct do_table_s *pdo)
 	char *name = "";	/*dbg only*/
 	bool need_pr = false;	/*dbg only*/
 
-	if (!pdo)
-		return;
-
-	if (!pdo->ptab		||
+	if (!pdo		||
+	    !pdo->ptab		||
 	    pdo->op_crr >= pdo->size) {
 		PR_ERR("di:err:%s:ovflow:0x%p,0x%p,crr=%d,size=%d\n",
 		       __func__,

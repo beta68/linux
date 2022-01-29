@@ -20,7 +20,6 @@
 
 #include "audio_io.h"
 #include "regs.h"
-#include <linux/mutex.h>
 
 #define TDM_A	0
 #define TDM_B	1
@@ -71,32 +70,27 @@ struct pcm_setting {
 	bool sclk_ws_inv;
 };
 
-struct aml_chmap {
-	struct mutex chmap_lock;
-	int chmap_layout;
-};
-
-void aml_tdm_enable(
+extern void aml_tdm_enable(
 	struct aml_audio_controller *actrl,
 	int stream, int index,
 	bool is_enable);
 
-void aml_tdm_arb_config(
+extern void aml_tdm_arb_config(
 	struct aml_audio_controller *actrl);
 
-void aml_tdm_fifo_reset(
+extern void aml_tdm_fifo_reset(
 	struct aml_audio_controller *actrl,
 	int stream, int index);
 void aml_tdmout_enable_gain(int tdmout_id, int en);
 
-int tdmout_get_frddr_type(int bitwidth);
+extern int tdmout_get_frddr_type(int bitwidth);
 
-void aml_tdm_fifo_ctrl(
+extern void aml_tdm_fifo_ctrl(
 	struct aml_audio_controller *actrl,
 	int bitwidth, int stream,
 	int index, unsigned int fifo_id);
 
-void aml_tdm_set_format(
+extern void aml_tdm_set_format(
 	struct aml_audio_controller *actrl,
 	struct pcm_setting *p_config,
 	unsigned int clk_sel,
@@ -105,55 +99,54 @@ void aml_tdm_set_format(
 	unsigned int capture_active,
 	unsigned int playback_active);
 
-void aml_update_tdmin_skew(struct aml_audio_controller *actrl,
-			   int idx, int skew);
+extern void aml_update_tdmin_skew(struct aml_audio_controller *actrl,
+	int idx, int skew);
 
-void aml_update_tdmin_rev_ws(struct aml_audio_controller *actrl,
-			     int idx, int is_rev);
+extern void aml_update_tdmin_rev_ws(struct aml_audio_controller *actrl,
+	int idx, int is_rev);
 
-void aml_tdm_set_slot_out(
+extern void aml_tdm_set_slot_out(
 	struct aml_audio_controller *actrl,
 	int index, int slots, int slot_width);
 
-void aml_tdm_set_slot_in(
+extern void aml_tdm_set_slot_in(
 	struct aml_audio_controller *actrl,
 	int index, int in_src, int slot_width);
 
-void aml_update_tdmin_src(
+extern void aml_update_tdmin_src(
 	struct aml_audio_controller *actrl,
 	int index, int in_src);
 
-void tdmin_set_chnum_en(
+extern void tdmin_set_chnum_en(
 	struct aml_audio_controller *actrl,
 	int index, bool enable);
 
-void aml_tdm_set_channel_mask(
+extern void aml_tdm_set_channel_mask(
 	struct aml_audio_controller *actrl,
 	int stream, int index, int lanes, int mask);
 
-void aml_tdm_set_lane_channel_swap(
+extern void aml_tdm_set_lane_channel_swap(
 	struct aml_audio_controller *actrl,
 	int stream, int index, int swap0, int swap1);
 
-void aml_tdm_set_bclk_ratio(
+extern void aml_tdm_set_bclk_ratio(
 	struct aml_audio_controller *actrl,
 	int clk_sel, int lrclk_hi, int bclk_ratio);
 
-void aml_tdm_set_lrclkdiv(
+extern void aml_tdm_set_lrclkdiv(
 	struct aml_audio_controller *actrl,
 	int clk_sel, int ratio);
 
-void tdm_enable(int tdm_index, int is_enable);
+extern void tdm_enable(int tdm_index, int is_enable);
 
-void tdm_fifo_enable(int tdm_index, int is_enable);
+extern void tdm_fifo_enable(int tdm_index, int is_enable);
 
-void aml_tdmout_select_aed(bool enable, int tdmout_id);
+extern void aml_tdmout_select_aed(bool enable, int tdmout_id);
 
-void aml_tdmout_get_aed_info(int tdmout_id,
-			     int *bitwidth,
-			     int *frddrtype);
+extern void aml_tdmout_get_aed_info(int tdmout_id,
+	int *bitwidth, int *frddrtype);
 
-void aml_tdm_clk_pad_select(
+extern void aml_tdm_clk_pad_select(
 	struct aml_audio_controller *actrl,
 	int mpad, int mpad_offset, int mclk_sel,
 	int tdm_index, int clk_sel);
@@ -162,7 +155,7 @@ void aml_tdm_mclk_pad_select(struct aml_audio_controller *actrl,
 void aml_tdm_sclk_pad_select(struct aml_audio_controller *actrl,
 			     int mpad_offset, int tdm_index, int clk_sel);
 
-void i2s_to_hdmitx_ctrl(int i2s_tohdmitxen_separated, int tdm_index);
+extern void i2s_to_hdmitx_ctrl(int tdm_index);
 void aml_tdm_mute_playback(
 		struct aml_audio_controller *actrl,
 		int index,
@@ -180,10 +173,5 @@ void aml_tdm_set_oe_v1(
 void aml_tdm_set_oe_v2(
 	struct aml_audio_controller *actrl,
 	int index, int force_oe, int oe_val);
-void aml_tdmout_auto_gain_enable(unsigned int tdm_id);
-void aml_tdmout_set_gain(int tdmout_id, int value);
-int aml_tdmout_get_gain(int tdmout_id);
-void aml_tdmout_set_mute(int tdmout_id, int mute);
-int aml_tdmout_get_mute(int tdmout_id);
-int aml_tdmin_get_status(int tdm_id);
+
 #endif

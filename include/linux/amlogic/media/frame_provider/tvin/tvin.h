@@ -557,7 +557,4 @@ extern void rx_get_audio_status(struct rx_audio_stat_s *aud_sts);
 
 extern void rx_set_atmos_flag(bool en);
 extern bool rx_get_atmos_flag(void);
-
-int rx_set_audio_param(uint32_t param);
-
 #endif

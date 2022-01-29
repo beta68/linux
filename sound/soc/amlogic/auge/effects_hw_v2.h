@@ -19,15 +19,7 @@
 #include <linux/types.h>
 #include "ddr_mngr.h"
 
-enum {
-	VERSION1 = 0,
-	VERSION2,
-	VERSION3,
-	VERSION4
-};
-
-void aed_init_ram_coeff(int version, int add, int len, unsigned int *params);
-void aed_set_ram_coeff(int version, int add, int len, unsigned int *params);
+void aed_set_ram_coeff(int add, int len, unsigned int *params);
 void aed_get_ram_coeff(int add, int len, unsigned int *params);
 void aed_set_multiband_drc_coeff(int band, unsigned int *params);
 void aed_get_multiband_drc_coeff(int band, unsigned int *params);
@@ -46,7 +38,6 @@ void aed_set_ctrl(bool enable, int sel,
 		enum frddr_dest module, int offset);
 void aed_set_format(int msb, enum ddr_types frddr_type,
 		enum ddr_num source, int offset);
-void aed_reload_config(void);
 void aed_enable(bool enable);
 void aed_set_mixer_params(void);
 void aed_eq_taps(unsigned int eq1_taps);
