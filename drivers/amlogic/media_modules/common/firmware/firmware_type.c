@@ -55,12 +55,14 @@ static const struct format_name_s format_name[] = {
 	{VIDEO_DEC_VP9_G12A,		"vp9_g12a"},
 	{VIDEO_DEC_AVS2,		"avs2"},
 	{VIDEO_DEC_AVS2_MMU,		"avs2_mmu"},
+	{VIDEO_DEC_AV1_MMU,		"av1_mmu"},
 	{VIDEO_ENC_H264,		"h264_enc"},
 	{VIDEO_ENC_JPEG,		"jpeg_enc"},
 	{FIRMWARE_MAX,			"unknown"},
 };
 
 static const struct cpu_type_s cpu_type[] = {
+	{AM_MESON_CPU_MAJOR_ID_M8B,	"m8b"},
 	{AM_MESON_CPU_MAJOR_ID_GXL,	"gxl"},
 	{AM_MESON_CPU_MAJOR_ID_GXM,	"gxm"},
 	{AM_MESON_CPU_MAJOR_ID_TXL,	"txl"},
@@ -74,6 +76,7 @@ static const struct cpu_type_s cpu_type[] = {
 	{AM_MESON_CPU_MAJOR_ID_SM1,	"sm1"},
 	{AM_MESON_CPU_MAJOR_ID_TL1,	"tl1"},
 	{AM_MESON_CPU_MAJOR_ID_TM2,	"tm2"},
+	{AM_MESON_CPU_MAJOR_ID_SC2,	"sc2"},
 };
 
 const char *get_fw_format_name(unsigned int format)

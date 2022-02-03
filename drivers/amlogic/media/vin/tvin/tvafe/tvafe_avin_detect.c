@@ -95,7 +95,7 @@ static unsigned int irq_filter;
 
 static unsigned int irq_pol;
 
-static unsigned int avin_count_times = 3;
+static unsigned int avin_count_times = 5;
 
 static unsigned int avin_timer_time = 10;/*100ms*/
 
@@ -323,8 +323,14 @@ void tvafe_cha2_SYNCTIP_close_config(void)
 		tvafe_pr_info("%s\n", __func__);
 
 	if (meson_data) {
-		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 0, AFE_CH2_EN_DC_BIAS_BIT,
-			AFE_CH2_EN_DC_BIAS_WIDTH);
+		if (meson_data->cpu_id >= AVIN_CPU_TYPE_T5)
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 0,
+				  AFE_T5_CH2_EN_DC_BIAS_BIT,
+				  AFE_T5_CH2_EN_DC_BIAS_WIDTH);
+		else
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 0,
+				  AFE_CH2_EN_DC_BIAS_BIT,
+				  AFE_CH2_EN_DC_BIAS_WIDTH);
 	} else {
 		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 0, AFE_CH2_EN_SYNC_TIP_BIT,
 			AFE_CH2_EN_SYNC_TIP_WIDTH);
@@ -391,8 +397,14 @@ void tvafe_cha2_detect_restart_config(void)
 		tvafe_pr_info("%s\n", __func__);
 
 	if (meson_data) {
-		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1, AFE_CH2_EN_DC_BIAS_BIT,
-			AFE_CH2_EN_DC_BIAS_WIDTH);
+		if (meson_data->cpu_id >= AVIN_CPU_TYPE_T5)
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1,
+				  AFE_T5_CH2_EN_DC_BIAS_BIT,
+				  AFE_T5_CH2_EN_DC_BIAS_WIDTH);
+		else
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1,
+				  AFE_CH2_EN_DC_BIAS_BIT,
+				  AFE_CH2_EN_DC_BIAS_WIDTH);
 	} else {
 		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1, AFE_CH2_EN_SYNC_TIP_BIT,
 			AFE_CH2_EN_SYNC_TIP_WIDTH);
@@ -458,8 +470,14 @@ static void tvafe_avin_detect_anlog_config(void)
 		AFE_CH2_COMP_LEVEL_ADJ_BIT, AFE_CH2_COMP_LEVEL_ADJ_WIDTH);
 		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 0,
 			AFE_CH2_COMP_HYS_ADJ_BIT, AFE_CH2_COMP_HYS_ADJ_WIDTH);
-		W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1, AFE_CH2_EN_DC_BIAS_BIT,
-			AFE_CH2_EN_DC_BIAS_WIDTH);
+		if (meson_data->cpu_id >= AVIN_CPU_TYPE_T5)
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1,
+				  AFE_T5_CH2_EN_DC_BIAS_BIT,
+				  AFE_T5_CH2_EN_DC_BIAS_WIDTH);
+		else
+			W_HIU_BIT(HHI_CVBS_DETECT_CNTL, 1,
+				  AFE_CH2_EN_DC_BIAS_BIT,
+				  AFE_CH2_EN_DC_BIAS_WIDTH);
 	} else {
 		if (detect_mode == 0) {
 			/*for ch1*/
@@ -730,6 +748,13 @@ static ssize_t tvafe_avin_detect_store(struct device *dev,
 				tvafe_pr_info("[%s]:invaild parameter\n",
 					__func__);
 				goto tvafe_avin_detect_store_err;
+			} else {
+				W_HIU_BIT(HHI_CVBS_DETECT_CNTL, dc_level_adj,
+					  AFE_CH1_DC_LEVEL_ADJ_BIT,
+					  AFE_CH1_DC_LEVEL_ADJ_WIDTH);
+				W_HIU_BIT(HHI_CVBS_DETECT_CNTL, dc_level_adj,
+					  AFE_CH2_DC_LEVEL_ADJ_BIT,
+					  AFE_CH2_DC_LEVEL_ADJ_WIDTH);
 			}
 		}
 		tvafe_pr_info("[%s]: dc_level_adj: %d\n",
@@ -740,6 +765,13 @@ static ssize_t tvafe_avin_detect_store(struct device *dev,
 				tvafe_pr_info("[%s]:invaild parameter\n",
 					__func__);
 				goto tvafe_avin_detect_store_err;
+			} else {
+				W_HIU_BIT(HHI_CVBS_DETECT_CNTL, comp_level_adj,
+					  AFE_CH1_COMP_LEVEL_ADJ_BIT,
+					  AFE_CH1_COMP_LEVEL_ADJ_WIDTH);
+				W_HIU_BIT(HHI_CVBS_DETECT_CNTL, comp_level_adj,
+					  AFE_CH2_COMP_LEVEL_ADJ_BIT,
+					  AFE_CH2_COMP_LEVEL_ADJ_WIDTH);
 			}
 		}
 		tvafe_pr_info("[%s]: comp_level_adj: %d\n",
@@ -945,11 +977,8 @@ static void tvafe_avin_detect_timer_handler(unsigned long arg)
 					tvafe_pr_info("avin[1].status IN.\n");
 				/*port opened and plug in,enable clamp*/
 				/*sync tip close*/
-				if (avport_opened == TVAFE_PORT_AV2) {
-					W_APB_BIT(TVFE_CLAMP_INTF, 1,
-					CLAMP_EN_BIT, CLAMP_EN_WID);
+				if (avport_opened == TVAFE_PORT_AV2)
 					tvafe_cha2_SYNCTIP_close_config();
-				}
 				}
 				s_irq_counter1_time = 0;
 			}
@@ -967,12 +996,11 @@ static void tvafe_avin_detect_timer_handler(unsigned long arg)
 					av2_plugin_state = 1;
 					tvafe_pr_info("avin[1].status OUT.\n");
 				/*port opened but plug out,need disable clamp*/
-					if (avport_opened == TVAFE_PORT_AV2) {
+				if (avport_opened == TVAFE_PORT_AV2) {
 					W_APB_BIT(TVFE_CLAMP_INTF, 0,
-						CLAMP_EN_BIT, CLAMP_EN_WID);
-						/*restart in tvafe port close*/
+						  CLAMP_EN_BIT, CLAMP_EN_WID);
 					tvafe_cha2_detect_restart_config();
-					}
+				}
 				}
 				s_irq_counter1_time = 0;
 			}
@@ -996,11 +1024,8 @@ static void tvafe_avin_detect_timer_handler(unsigned long arg)
 				tvafe_pr_info("avin[0].status IN.\n");
 				/*port opened and plug in then enable clamp*/
 				/*sync tip close*/
-				if (avport_opened == TVAFE_PORT_AV1) {
-					W_APB_BIT(TVFE_CLAMP_INTF, 1,
-						CLAMP_EN_BIT, CLAMP_EN_WID);
+				if (avport_opened == TVAFE_PORT_AV1)
 					tvafe_cha1_SYNCTIP_close_config();
-				}
 			}
 			s_irq_counter0_time = 0;
 		}
@@ -1022,11 +1047,11 @@ static void tvafe_avin_detect_timer_handler(unsigned long arg)
 			/*the EN_SYNC_TIP need be set to "1"*/
 			/*to sense the plug in operation*/
 			/*port opened but plug out,need disable clamp*/
-				if (avport_opened == TVAFE_PORT_AV1) {
-					W_APB_BIT(TVFE_CLAMP_INTF, 0,
-						CLAMP_EN_BIT, CLAMP_EN_WID);
-					tvafe_cha1_detect_restart_config();
-				}
+			if (avport_opened == TVAFE_PORT_AV1) {
+				W_APB_BIT(TVFE_CLAMP_INTF, 0,
+					  CLAMP_EN_BIT, CLAMP_EN_WID);
+				tvafe_cha1_detect_restart_config();
+			}
 			}
 			s_irq_counter0_time = 0;
 		}
@@ -1180,6 +1205,16 @@ struct meson_avin_data tm2_data = {
 	.name = "meson-tm2-avin-detect",
 };
 
+struct meson_avin_data t5_data = {
+	.cpu_id = AVIN_CPU_TYPE_T5,
+	.name = "meson-t5-avin-detect",
+};
+
+struct meson_avin_data t5d_data = {
+	.cpu_id = AVIN_CPU_TYPE_T5D,
+	.name = "meson-t5d-avin-detect",
+};
+
 static const struct of_device_id tvafe_avin_dt_match[] = {
 	{	.compatible = "amlogic, tvafe_avin_detect",
 	},
@@ -1188,6 +1223,12 @@ static const struct of_device_id tvafe_avin_dt_match[] = {
 	},
 	{	.compatible = "amlogic, tm2_tvafe_avin_detect",
 		.data = &tm2_data,
+	},
+	{	.compatible = "amlogic, t5_tvafe_avin_detect",
+		.data = &t5_data,
+	},
+	{	.compatible = "amlogic, t5d_tvafe_avin_detect",
+		.data = &t5d_data,
 	},
 	{},
 };

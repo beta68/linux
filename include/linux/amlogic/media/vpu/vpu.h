@@ -88,6 +88,13 @@ enum vpu_mod_e {
 	VPU_AFBCE,            /* reg4[5:4], TL1 */
 	VPU_VDIN_WR_MIF2,     /* reg4[7:6], TM2 */
 	VPU_DMA,              /* reg4[11:8], TM2 */
+	VPU_HDMI,             /* reg4[13:12], TM2B */
+	VPU_FGRAIN0,          /* reg4[15:14], TM2B */
+	VPU_FGRAIN1,          /* reg4[17:16], TM2B */
+	VPU_DI_AFBCD,          /* reg9[23:18], SC2 */
+	VPU_DI_AFBCE,          /* reg9[27:24], SC2 */
+	VPU_DI_DOLBY,          /* reg9[29:28], SC2 */
+	VPU_DECONTOUR,        /* reg4[19:18], T5 */
 
 	VPU_MOD_MAX,
 
@@ -121,4 +128,15 @@ extern void switch_vpu_mem_pd_vmod(unsigned int vmod, int flag);
 extern int get_vpu_mem_pd_vmod(unsigned int vmod);
 
 extern void switch_vpu_clk_gate_vmod(unsigned int vmod, int flag);
+
+/* vpu vcbus reg access api */
+unsigned int vpu_vcbus_read(unsigned int _reg);
+void vpu_vcbus_write(unsigned int _reg, unsigned int _value);
+void vpu_vcbus_setb(unsigned int _reg, unsigned int _value,
+		    unsigned int _start, unsigned int _len);
+unsigned int vpu_vcbus_getb(unsigned int _reg,
+			    unsigned int _start, unsigned int _len);
+void vpu_vcbus_set_mask(unsigned int _reg, unsigned int _mask);
+void vpu_vcbus_clr_mask(unsigned int _reg, unsigned int _mask);
+
 #endif

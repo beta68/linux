@@ -396,19 +396,6 @@ enum tvin_ar_b3_b0_val_e {
 	TVIN_AR_14x9_FULL_VAL = 0x1e,
 };
 
-enum tvin_aspect_ratio_e {
-	TVIN_ASPECT_NULL = 0,
-	TVIN_ASPECT_1x1,
-	TVIN_ASPECT_4x3_FULL,
-	TVIN_ASPECT_14x9_FULL,
-	TVIN_ASPECT_14x9_LB_CENTER,
-	TVIN_ASPECT_14x9_LB_TOP,
-	TVIN_ASPECT_16x9_FULL,
-	TVIN_ASPECT_16x9_LB_CENTER,
-	TVIN_ASPECT_16x9_LB_TOP,
-	TVIN_ASPECT_MAX,
-};
-
 const char *tvin_aspect_ratio_str(enum tvin_aspect_ratio_e aspect_ratio);
 
 enum tvin_hdr_eotf_e {
@@ -448,6 +435,19 @@ struct tvin_hdr_info_s {
 	unsigned int hdr_check_cnt;
 };
 
+struct tvin_dv_vsif_raw_s {
+	u8 pkttype;
+	u8 version;
+	u8 length;
+	u8 PB[29];
+};
+
+struct tvin_emp_data_s {
+	u8 size;
+	u8 empbuf[1024];
+	u8 tag_id;
+};
+
 struct tvin_hdr10plus_info_s {
 	bool hdr10p_on;
 	struct tvin_hdr10p_data_s hdr10p_data;
@@ -485,16 +485,23 @@ struct tvin_sig_property_s {
 	unsigned int		pre_he;	/* for horizontal end cut window */
 	unsigned int		decimation_ratio;	/* for decimation */
 	unsigned int		colordepth; /* for color bit depth */
-	unsigned int		vdin_hdr_Flag;
+	unsigned int		vdin_hdr_flag;
 	enum tvin_color_fmt_range_e color_fmt_range;
 	struct tvin_hdr_info_s hdr_info;
 	struct tvin_dv_vsif_s dv_vsif;/*dolby vsi info*/
+	struct tvin_dv_vsif_raw_s dv_vsif_raw;
 	bool dolby_vision;/*is signal dolby version*/
 	bool low_latency;/*is low latency dolby mode*/
 	uint8_t fps;
 	unsigned int skip_vf_num;/*skip pre vframe num*/
 	struct tvin_latency_s latency;
 	struct tvin_hdr10plus_info_s hdr10p_info;
+	struct tvin_emp_data_s emp_data;
+	unsigned int cnt;
+
+	/* only use for loopback, 0=positvie, 1=negative */
+	unsigned int polarity_vs;
+	unsigned int hdcp_sts;	/* pretected content src. 1:pretected 0:not*/
 };
 
 #define TVAFE_VF_POOL_SIZE			6 /* 8 */

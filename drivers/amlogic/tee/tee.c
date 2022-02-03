@@ -43,7 +43,6 @@ static int disable_flag = 1;
 			   ARM_SMCCC_OWNER_TRUSTED_OS_END, \
 			   TEE_SMC_FUNCID_CALLS_UID)
 
-
 #define TEE_SMC_FAST_CALL_VAL(func_num) \
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, \
 			ARM_SMCCC_OWNER_TRUSTED_OS, (func_num))
@@ -75,6 +74,30 @@ static int disable_flag = 1;
 #define TEE_SMC_FUNCID_UNPROTECT_MEM               0xE024
 #define TEE_SMC_UNPROTECT_MEM \
 	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_UNPROTECT_MEM)
+
+#define TEE_SMC_FUNCID_DEMUX_CONFIG_PIPELINE       0xE050
+#define TEE_SMC_DEMUX_CONFIG_PIPELINE \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_DEMUX_CONFIG_PIPELINE)
+
+#define TEE_SMC_FUNCID_DEMUX_CONFIG_PAD            0xE051
+#define TEE_SMC_DEMUX_CONFIG_PAD \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_DEMUX_CONFIG_PAD)
+
+#define TEE_SMC_FUNCID_SYS_BOOT_COMPLETE           0xE060
+#define TEE_SMC_SYS_BOOT_COMPLETE \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_SYS_BOOT_COMPLETE)
+
+#define TEE_SMC_FUNCID_VP9_PROB_PROCESS            0xE070
+#define TEE_SMC_VP9_PROB_PROCESS \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_VP9_PROB_PROCESS)
+
+#define TEE_SMC_FUNCID_VP9_PROB_MALLOC             0xE071
+#define TEE_SMC_VP9_PROB_MALLOC \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_VP9_PROB_MALLOC)
+
+#define TEE_SMC_FUNCID_VP9_PROB_FREE               0xE072
+#define TEE_SMC_VP9_PROB_FREE \
+	TEE_SMC_FAST_CALL_VAL(TEE_SMC_FUNCID_VP9_PROB_FREE)
 
 static struct class *tee_sys_class;
 
@@ -115,6 +138,24 @@ static int tee_msg_api_revision(uint32_t *major, uint32_t *minor)
 	return 0;
 }
 
+static int tee_set_sys_boot_complete(void)
+{
+	struct arm_smccc_res res;
+	static int inited;
+
+	res.a0 = 0;
+
+	if (!inited) {
+		arm_smccc_smc(TEE_SMC_SYS_BOOT_COMPLETE,
+				0, 0, 0, 0, 0, 0, 0, &res);
+
+		if (!res.a0)
+			inited = 1;
+	}
+
+	return res.a0;
+}
+
 static ssize_t tee_os_version_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
@@ -145,10 +186,31 @@ static ssize_t tee_api_version_show(struct class *class,
 	return ret;
 }
 
+static ssize_t tee_sys_boot_complete_store(struct class *class,
+						struct class_attribute *attr,
+						const char *buf, size_t count)
+{
+	bool val;
+	int ret = 0;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	if (val)
+		ret = tee_set_sys_boot_complete();
+
+	if (ret)
+		return -EINVAL;
+
+	return count;
+}
+
 static CLASS_ATTR(os_version, 0644, tee_os_version_show,
 		NULL);
 static CLASS_ATTR(api_version, 0644, tee_api_version_show,
 		NULL);
+static CLASS_ATTR(sys_boot_complete, 0644, NULL,
+		tee_sys_boot_complete_store);
 
 /*
  * index: firmware index
@@ -179,6 +241,7 @@ EXPORT_SYMBOL(tee_load_video_fw_swap);
 bool tee_enabled(void)
 {
 	struct arm_smccc_res res;
+
 	if (disable_flag == 1)
 		return false;
 	/*return false;*/ /*disable tee load temporary*/
@@ -235,7 +298,24 @@ uint32_t tee_protect_mem_by_type(uint32_t type,
 }
 EXPORT_SYMBOL(tee_protect_mem_by_type);
 
-void tee_unprotect_mem(uint32_t handle)
+u32 tee_protect_mem(u32 type, u32 level,
+		u32 start, u32 size, u32 *handle)
+{
+	struct arm_smccc_res res;
+
+	if (!handle)
+		return 0xFFFF0006;
+
+	arm_smccc_smc(TEE_SMC_PROTECT_MEM_BY_TYPE,
+			type, start, size, level, 0, 0, 0, &res);
+
+	*handle = res.a1;
+
+	return res.a0;
+}
+EXPORT_SYMBOL(tee_protect_mem);
+
+void tee_unprotect_mem(u32 handle)
 {
 	struct arm_smccc_res res;
 
@@ -255,6 +335,66 @@ int tee_config_device_state(int dev_id, int secure)
 }
 EXPORT_SYMBOL(tee_config_device_state);
 
+void tee_demux_config_pipeline(int tsn_in, int tsn_out)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(TEE_SMC_DEMUX_CONFIG_PIPELINE,
+			tsn_in, tsn_out, 0, 0, 0, 0, 0, &res);
+}
+EXPORT_SYMBOL(tee_demux_config_pipeline);
+
+int tee_demux_config_pad(int reg, int val)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(TEE_SMC_DEMUX_CONFIG_PAD,
+			reg, val, 0, 0, 0, 0, 0, &res);
+
+	return res.a0;
+}
+EXPORT_SYMBOL(tee_demux_config_pad);
+
+int tee_vp9_prob_process(u32 cur_frame_type, u32 prev_frame_type,
+		u32 prob_status, u32 prob_addr)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(TEE_SMC_VP9_PROB_PROCESS,
+			cur_frame_type, prev_frame_type, prob_status, prob_addr,
+			0, 0, 0, &res);
+
+	return res.a0;
+}
+EXPORT_SYMBOL(tee_vp9_prob_process);
+
+int tee_vp9_prob_malloc(u32 *prob_addr)
+{
+	struct arm_smccc_res res;
+
+	if (!prob_addr)
+		return 0xFFFF0006;
+
+	arm_smccc_smc(TEE_SMC_VP9_PROB_MALLOC,
+			0, 0, 0, 0, 0, 0, 0, &res);
+
+	*prob_addr = res.a1;
+
+	return res.a0;
+}
+EXPORT_SYMBOL(tee_vp9_prob_malloc);
+
+int tee_vp9_prob_free(u32 prob_addr)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(TEE_SMC_VP9_PROB_FREE,
+			prob_addr, 0, 0, 0, 0, 0, 0, &res);
+
+	return res.a0;
+}
+EXPORT_SYMBOL(tee_vp9_prob_free);
+
 int tee_create_sysfs(void)
 {
 	int ret;
@@ -268,6 +408,12 @@ int tee_create_sysfs(void)
 	ret = class_create_file(tee_sys_class, &class_attr_api_version);
 	if (ret != 0) {
 		pr_err("create class file os_version fail\n");
+		return ret;
+	}
+
+	ret = class_create_file(tee_sys_class, &class_attr_sys_boot_complete);
+	if (ret != 0) {
+		pr_err("create class file sys_boot_complete fail\n");
 		return ret;
 	}
 

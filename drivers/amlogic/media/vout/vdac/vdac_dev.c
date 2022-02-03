@@ -32,12 +32,14 @@
 #include <linux/delay.h>
 #include <linux/uaccess.h>
 #include <linux/clk.h>
+#include <linux/io.h>
+#include <linux/mutex.h>
 #include <linux/amlogic/cpu_version.h>
 #include <linux/amlogic/media/vout/vout_notify.h>
 #include <linux/amlogic/media/vout/vdac_dev.h>
 #include <linux/amlogic/iomap.h>
-#include <linux/io.h>
-#include <linux/mutex.h>
+#include <linux/amlogic/media/vpu/vpu.h>
+#include <linux/amlogic/media/vout/vclk_serve.h>
 #include "vdac_dev.h"
 
 #define AMVDAC_NAME               "amvdac"
@@ -67,45 +69,96 @@ static struct mutex vdac_mutex;
  * #define VDAC_MODULE_AVOUT_AV  (1 << 6)
  */
 static unsigned int pri_flag;
+static unsigned int pri_flag_cnt;
 
 static unsigned int vdac_debug_print;
 
-static inline unsigned int vdac_hiu_reg_read(unsigned int reg)
+static inline unsigned int vdac_ana_reg_read(unsigned int reg)
 {
+#ifdef CONFIG_AMLOGIC_VOUT_CLK_SERVE
+	return vclk_ana_reg_read(reg);
+#else
 	return aml_read_hiubus(reg);
+#endif
 }
 
-static inline void vdac_hiu_reg_write(unsigned int reg, unsigned int val)
+static inline void vdac_ana_reg_write(unsigned int reg, unsigned int val)
 {
+#ifdef CONFIG_AMLOGIC_VOUT_CLK_SERVE
+	vclk_ana_reg_write(reg, val);
+#else
 	aml_write_hiubus(reg, val);
+#endif
 }
 
-static inline void vdac_hiu_reg_setb(unsigned int reg, unsigned int value,
-		unsigned int start, unsigned int len)
+static inline void vdac_ana_reg_setb(unsigned int reg, unsigned int value,
+				     unsigned int start, unsigned int len)
 {
-	vdac_hiu_reg_write(reg, ((vdac_hiu_reg_read(reg) &
+	vdac_ana_reg_write(reg, ((vdac_ana_reg_read(reg) &
 			~(((1L << (len)) - 1) << (start))) |
 			(((value) & ((1L << (len)) - 1)) << (start))));
 }
 
-static inline unsigned int vdac_hiu_reg_getb(unsigned int reg,
-		unsigned int start, unsigned int len)
+static inline unsigned int vdac_ana_reg_getb(unsigned int reg,
+					     unsigned int start,
+					     unsigned int len)
 {
 	unsigned int val;
 
-	val = ((vdac_hiu_reg_read(reg) >> (start)) & ((1L << (len)) - 1));
+	val = ((vdac_ana_reg_read(reg) >> (start)) & ((1L << (len)) - 1));
 
 	return val;
 }
 
+static inline unsigned int vdac_clk_reg_read(unsigned int reg)
+{
+#ifdef CONFIG_AMLOGIC_VOUT_CLK_SERVE
+	return vclk_clk_reg_read(reg);
+#else
+	return aml_read_hiubus(reg);
+#endif
+}
+
+static inline void vdac_clk_reg_write(unsigned int reg, unsigned int val)
+{
+#ifdef CONFIG_AMLOGIC_VOUT_CLK_SERVE
+	vclk_clk_reg_write(reg, val);
+#else
+	aml_write_hiubus(reg, val);
+#endif
+}
+
+static inline void vdac_clk_reg_setb(unsigned int reg, unsigned int value,
+				     unsigned int start, unsigned int len)
+{
+	vdac_clk_reg_write(reg, ((vdac_clk_reg_read(reg) &
+			~(((1L << (len)) - 1) << (start))) |
+			(((value) & ((1L << (len)) - 1)) << (start))));
+}
+
+static inline unsigned int vdac_clk_reg_getb(unsigned int reg,
+					     unsigned int start,
+					     unsigned int len)
+{
+	return (vdac_clk_reg_read(reg) >> (start)) & ((1L << (len)) - 1);
+}
+
 static inline unsigned int vdac_vcbus_reg_read(unsigned int reg)
 {
+#ifdef CONFIG_AMLOGIC_VPU
+	return vpu_vcbus_read(reg);
+#else
 	return aml_read_vcbus(reg);
+#endif
 }
 
 static inline void vdac_vcbus_reg_write(unsigned int reg, unsigned int val)
 {
+#ifdef CONFIG_AMLOGIC_VPU
+	vpu_vcbus_write(reg, val);
+#else
 	aml_write_vcbus(reg, val);
+#endif
 }
 
 static inline void vdac_vcbus_reg_setb(unsigned int reg, unsigned int value,
@@ -141,10 +194,10 @@ static int vdac_ctrl_config(bool on, unsigned int reg, unsigned int bit)
 				val = table[i].val;
 			else
 				val = table[i].val ? 0 : 1;
-			vdac_hiu_reg_setb(reg, val, bit, table[i].len);
+			vdac_ana_reg_setb(reg, val, bit, table[i].len);
 			if (vdac_debug_print) {
 				pr_info("vdac: reg=0x%02x set bit%d=%d, readback=0x%08x\n",
-					reg, bit, val, vdac_hiu_reg_read(reg));
+					reg, bit, val, vdac_ana_reg_read(reg));
 			}
 			ret = 0;
 			break;
@@ -155,6 +208,37 @@ static int vdac_ctrl_config(bool on, unsigned int reg, unsigned int bit)
 	return ret;
 }
 
+static void vdac_enable_dac_input(unsigned int reg_cntl0)
+{
+	vdac_ana_reg_setb(reg_cntl0, 0x2, 0, 3);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 4, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 6, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x3, 13, 3);
+	vdac_ana_reg_setb(reg_cntl0, 0x10, 18, 5);
+}
+
+static void vdac_enable_dac_bypass(unsigned int reg_cntl0)
+{
+	vdac_ana_reg_setb(reg_cntl0, 0x2, 0, 3);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 4, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 6, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x2, 8, 2);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 10, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 12, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x3, 13, 3);
+	vdac_ana_reg_setb(reg_cntl0, 0x10, 18, 5);
+	vdac_ana_reg_setb(reg_cntl0, 0x1, 25, 1);
+}
+
+static void vdac_disable_dac_bypass(unsigned int reg_cntl0)
+{
+	vdac_ana_reg_setb(reg_cntl0, 0x0, 4, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x0, 8, 2);
+	vdac_ana_reg_setb(reg_cntl0, 0x0, 10, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x0, 12, 1);
+	vdac_ana_reg_setb(reg_cntl0, 0x0, 25, 1);
+}
+
 static void vdac_enable_avout_atv(bool on)
 {
 	unsigned int reg_cntl0 = s_vdac_data->reg_cntl0;
@@ -162,47 +246,59 @@ static void vdac_enable_avout_atv(bool on)
 
 	if (on) {
 		/* clock delay control */
-		vdac_hiu_reg_setb(HHI_VIID_CLK_DIV, 1, 19, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid2_clk_div, 1, 19, 1);
 		/* vdac_clock_mux form atv demod */
-		vdac_hiu_reg_setb(HHI_VID_CLK_CNTL2, 1, 8, 1);
-		vdac_hiu_reg_setb(HHI_VID_CLK_CNTL2, 1, 4, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid_clk_ctrl2, 1, 8, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid_clk_ctrl2, 1, 4, 1);
+
 		/* vdac_clk gated clock control */
 		vdac_vcbus_reg_setb(VENC_VDAC_DACSEL0, 1, 5, 1);
 
-		vdac_ctrl_config(1, reg_cntl0, 9);
-		/*after txlx need reset bandgap after bit9 enabled*/
-		/*bit10 reset bandgap in g12a*/
-		if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
-			vdac_ctrl_config(0, reg_cntl0, 13);
-			udelay(5);
-			vdac_ctrl_config(1, reg_cntl0, 13);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_enable_dac_input(reg_cntl0);
+			vdac_ctrl_config(1, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(1, reg_cntl0, 9);
+			/*after txlx need reset bandgap after bit9 enabled*/
+			/*bit10 reset bandgap in g12a*/
+			if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
+				vdac_ctrl_config(0, reg_cntl0, 13);
+				udelay(5);
+				vdac_ctrl_config(1, reg_cntl0, 13);
+			}
+
+			/*Cdac pwd*/
+			vdac_ctrl_config(1, reg_cntl1, 3);
+			/* enable AFE output buffer */
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(0, reg_cntl0, 10);
+			vdac_ctrl_config(1, reg_cntl0, 0);
 		}
 
-		/*Cdac pwd*/
-		vdac_ctrl_config(1, reg_cntl1, 3);
-		/* enable AFE output buffer */
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(0, reg_cntl0, 10);
-		vdac_ctrl_config(1, reg_cntl0, 0);
-
-
 	} else {
-		vdac_ctrl_config(0, reg_cntl0, 9);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_ana_reg_setb(reg_cntl0, 0x0, 4, 1);
+			vdac_ctrl_config(0, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(0, reg_cntl0, 9);
 
-		vdac_ctrl_config(0, reg_cntl0, 0);
-		/* Disable AFE output buffer */
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(0, reg_cntl0, 10);
-		/* disable dac output */
-		vdac_ctrl_config(0, reg_cntl1, 3);
-
+			vdac_ctrl_config(0, reg_cntl0, 0);
+			/* Disable AFE output buffer */
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(0, reg_cntl0, 10);
+			/* disable dac output */
+			vdac_ctrl_config(0, reg_cntl1, 3);
+		}
 		/* vdac_clk gated clock control */
 		vdac_vcbus_reg_setb(VENC_VDAC_DACSEL0, 0, 5, 1);
+
 		/* vdac_clock_mux form atv demod */
-		vdac_hiu_reg_setb(HHI_VID_CLK_CNTL2, 0, 4, 1);
-		vdac_hiu_reg_setb(HHI_VID_CLK_CNTL2, 0, 8, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid_clk_ctrl2, 0, 4, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid_clk_ctrl2, 0, 8, 1);
 		/* clock delay control */
-		vdac_hiu_reg_setb(HHI_VIID_CLK_DIV, 0, 19, 1);
+		vdac_clk_reg_setb(s_vdac_data->reg_vid2_clk_div, 0, 19, 1);
 	}
 }
 
@@ -212,19 +308,31 @@ static void vdac_enable_dtv_demod(bool on)
 	unsigned int reg_cntl1 = s_vdac_data->reg_cntl1;
 
 	if (on) {
-		vdac_ctrl_config(1, reg_cntl0, 9);
-		if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
-			vdac_ctrl_config(0, reg_cntl0, 13);
-			udelay(5);
-			vdac_ctrl_config(1, reg_cntl0, 13);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_enable_dac_input(reg_cntl0);
+			vdac_ctrl_config(1, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(1, reg_cntl0, 9);
+			if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
+				vdac_ctrl_config(0, reg_cntl0, 13);
+				udelay(5);
+				vdac_ctrl_config(1, reg_cntl0, 13);
+			}
+			vdac_ctrl_config(1, reg_cntl1, 3);
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(0, reg_cntl0, 10);
+			vdac_ctrl_config(1, reg_cntl0, 0);
 		}
-		vdac_ctrl_config(1, reg_cntl1, 3);
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(0, reg_cntl0, 10);
-		vdac_ctrl_config(1, reg_cntl0, 0);
 	} else {
-		vdac_ctrl_config(0, reg_cntl0, 9);
-		vdac_ctrl_config(0, reg_cntl1, 3);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_ana_reg_setb(reg_cntl0, 0x0, 4, 1);
+			vdac_ctrl_config(0, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(0, reg_cntl0, 9);
+			vdac_ctrl_config(0, reg_cntl1, 3);
+		}
 	}
 }
 
@@ -234,37 +342,50 @@ static void vdac_enable_avout_av(bool on)
 	unsigned int reg_cntl1 = s_vdac_data->reg_cntl1;
 
 	if (on) {
-		vdac_ctrl_config(1, reg_cntl0, 9);
-		/*txlx need reset bandgap after bit9 enabled*/
-		if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
-			vdac_ctrl_config(0, reg_cntl0, 13);
-			udelay(5);
-			vdac_ctrl_config(1, reg_cntl0, 13);
-		}
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_enable_dac_bypass(reg_cntl0);
+			vdac_ana_reg_setb(reg_cntl1, 0x5c, 0, 7);
+			vdac_ctrl_config(0, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(1, reg_cntl0, 9);
+			/*txlx need reset bandgap after bit9 enabled*/
+			if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
+				vdac_ctrl_config(0, reg_cntl0, 13);
+				udelay(5);
+				vdac_ctrl_config(1, reg_cntl0, 13);
+			}
 
-		vdac_ctrl_config(1, reg_cntl1, 3);
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(1, reg_cntl0, 10);
-		if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
-			s_vdac_data->cpu_id == VDAC_CPU_TM2) {
-			/*[6][8]bypass buffer enable*/
-			vdac_ctrl_config(1, reg_cntl1, 6);
-			vdac_ctrl_config(1, reg_cntl1, 8);
+			vdac_ctrl_config(1, reg_cntl1, 3);
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(1, reg_cntl0, 10);
+			if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
+				s_vdac_data->cpu_id == VDAC_CPU_TM2) {
+				/*[6][8]bypass buffer enable*/
+				vdac_ctrl_config(1, reg_cntl1, 6);
+				vdac_ctrl_config(1, reg_cntl1, 8);
+			}
 		}
 	} else {
-		vdac_ctrl_config(0, reg_cntl0, 9);
-		if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
-			s_vdac_data->cpu_id == VDAC_CPU_TM2) {
-			/*[6][8]bypass buffer disable*/
-			vdac_ctrl_config(0, reg_cntl1, 6);
-			vdac_ctrl_config(0, reg_cntl1, 8);
-		}
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_disable_dac_bypass(reg_cntl0);
+			vdac_ctrl_config(0, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(0, reg_cntl0, 9);
+			if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
+				s_vdac_data->cpu_id == VDAC_CPU_TM2) {
+				/*[6][8]bypass buffer disable*/
+				vdac_ctrl_config(0, reg_cntl1, 6);
+				vdac_ctrl_config(0, reg_cntl1, 8);
+			}
 
-		/* Disable AFE output buffer */
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(0, reg_cntl0, 10);
-		/* disable dac output */
-		vdac_ctrl_config(0, reg_cntl1, 3);
+			/* Disable AFE output buffer */
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(0, reg_cntl0, 10);
+			/* disable dac output */
+			vdac_ctrl_config(0, reg_cntl1, 3);
+		}
 	}
 }
 
@@ -274,20 +395,36 @@ static void vdac_enable_cvbs_out(bool on)
 	unsigned int reg_cntl1 = s_vdac_data->reg_cntl1;
 
 	if (on) {
-		vdac_ctrl_config(1, reg_cntl1, 3);
-		vdac_ctrl_config(1, reg_cntl0, 0);
-		vdac_ctrl_config(1, reg_cntl0, 9);
-		if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
-			vdac_ctrl_config(0, reg_cntl0, 13);
-			udelay(5);
-			vdac_ctrl_config(1, reg_cntl0, 13);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_enable_dac_input(reg_cntl0);
+			vdac_ctrl_config(1, reg_cntl1, 7);
+		} else {
+			if (s_vdac_data->cpu_id <= VDAC_CPU_GXLX)
+				vdac_ana_reg_setb(reg_cntl0, 0, 12, 4);
+			else
+				vdac_ana_reg_setb(reg_cntl0, 0x6, 12, 4);
+			vdac_ctrl_config(1, reg_cntl1, 3);
+			vdac_ctrl_config(1, reg_cntl0, 0);
+			vdac_ctrl_config(1, reg_cntl0, 9);
+			if (s_vdac_data->cpu_id == VDAC_CPU_TXLX) {
+				vdac_ctrl_config(0, reg_cntl0, 13);
+				udelay(5);
+				vdac_ctrl_config(1, reg_cntl0, 13);
+			}
+			if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
+				vdac_ctrl_config(0, reg_cntl0, 10);
 		}
-		if (s_vdac_data->cpu_id < VDAC_CPU_G12AB)
-			vdac_ctrl_config(0, reg_cntl0, 10);
 	} else {
-		vdac_ctrl_config(0, reg_cntl0, 9);
-		vdac_ctrl_config(0, reg_cntl0, 0);
-		vdac_ctrl_config(0, reg_cntl1, 3);
+		if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+		    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+			vdac_ana_reg_setb(reg_cntl0, 0x0, 4, 1);
+			vdac_ctrl_config(0, reg_cntl1, 7);
+		} else {
+			vdac_ctrl_config(0, reg_cntl0, 9);
+			vdac_ctrl_config(0, reg_cntl0, 0);
+			vdac_ctrl_config(0, reg_cntl1, 3);
+		}
 	}
 }
 
@@ -297,7 +434,7 @@ static void vdac_enable_audio_out(bool on)
 
 	/*Bandgap optimization*/
 	if (s_vdac_data->cpu_id == VDAC_CPU_TXLX)
-		vdac_hiu_reg_setb(reg_cntl0, 0xe, 3, 5);
+		vdac_ana_reg_setb(reg_cntl0, 0xe, 3, 5);
 
 	if (s_vdac_data->cpu_id == VDAC_CPU_TXL ||
 		s_vdac_data->cpu_id == VDAC_CPU_TXLX ||
@@ -307,6 +444,14 @@ static void vdac_enable_audio_out(bool on)
 			vdac_ctrl_config(1, reg_cntl0, 9);
 		else
 			vdac_ctrl_config(0, reg_cntl0, 9);
+	}
+
+	if (s_vdac_data->cpu_id == VDAC_CPU_T5 ||
+	    s_vdac_data->cpu_id == VDAC_CPU_T5D) {
+		if (on)
+			vdac_ana_reg_setb(reg_cntl0, 0x1, 4, 1);
+		else
+			vdac_ana_reg_setb(reg_cntl0, 0x0, 4, 1);
 	}
 }
 
@@ -324,9 +469,10 @@ void vdac_enable(bool on, unsigned int module_sel)
 	switch (module_sel) {
 	case VDAC_MODULE_AVOUT_ATV: /* atv avout */
 		if (on) {
+			++pri_flag_cnt;
 			if (pri_flag & VDAC_MODULE_AVOUT_ATV) {
-				pr_info("%s: avout_atv is already on\n",
-					__func__);
+				pr_info("%s: avout_atv is already on, pri_flag_cnt: %d\n",
+					__func__, pri_flag_cnt);
 				break;
 			}
 			pri_flag |= VDAC_MODULE_AVOUT_ATV;
@@ -337,11 +483,19 @@ void vdac_enable(bool on, unsigned int module_sel)
 			}
 			vdac_enable_avout_atv(1);
 		} else {
+			--pri_flag_cnt;
 			if (!(pri_flag & VDAC_MODULE_AVOUT_ATV)) {
-				pr_info("%s: avout_atv is already off\n",
-					__func__);
+				pr_info("%s: avout_atv is already off, pri_flag_cnt: %d\n",
+					__func__, pri_flag_cnt);
 				break;
 			}
+
+			if (pri_flag_cnt) {
+				pr_info("%s: avout_atv is in use, cann't off, pri_flag_cnt: %d\n",
+					__func__, pri_flag_cnt);
+				break;
+			}
+
 			pri_flag &= ~VDAC_MODULE_AVOUT_ATV;
 			if (pri_flag & VDAC_MODULE_CVBS_OUT) {
 				if (vdac_debug_print) {
@@ -418,8 +572,8 @@ void vdac_enable(bool on, unsigned int module_sel)
 		}
 		break;
 	default:
-		pr_err("%s:module_sel: 0x%x wrong module index !! "
-					, __func__, module_sel);
+		pr_err("%s:module_sel: 0x%x wrong module index !! ",
+		       __func__, module_sel);
 		break;
 	}
 
@@ -429,36 +583,48 @@ void vdac_enable(bool on, unsigned int module_sel)
 			"reg_cntl1:                0x%02x=0x%08x\n",
 			pri_flag,
 			s_vdac_data->reg_cntl0,
-			vdac_hiu_reg_read(s_vdac_data->reg_cntl0),
+			vdac_ana_reg_read(s_vdac_data->reg_cntl0),
 			s_vdac_data->reg_cntl1,
-			vdac_hiu_reg_read(s_vdac_data->reg_cntl1));
+			vdac_ana_reg_read(s_vdac_data->reg_cntl1));
 	}
 
 	mutex_unlock(&vdac_mutex);
 }
 EXPORT_SYMBOL(vdac_enable);
 
-void vdac_set_ctrl0_ctrl1(unsigned int ctrl0, unsigned int ctrl1)
+int vdac_vref_adj(unsigned int value)
 {
-	unsigned int reg_cntl0;
-	unsigned int reg_cntl1;
+	struct meson_vdac_ctrl_s *table;
+	unsigned int reg;
+	unsigned int bit = 16;
+	int i = 0;
+	int ret = -1;
 
 	if (!s_vdac_data) {
 		pr_err("\n%s: s_vdac_data NULL\n", __func__);
-		return;
+		return ret;
 	}
 
-	reg_cntl0 = s_vdac_data->reg_cntl0;
-	reg_cntl1 = s_vdac_data->reg_cntl1;
+	table = s_vdac_data->ctrl_table;
+	reg = s_vdac_data->reg_cntl0;
 
-	vdac_hiu_reg_write(reg_cntl0, ctrl0);
-	vdac_hiu_reg_write(reg_cntl1, ctrl1);
-	if (vdac_debug_print) {
-		pr_info("vdac: set reg 0x%02x=0x%08x, readback=0x%08x\n",
-			reg_cntl0, ctrl0, vdac_hiu_reg_read(reg_cntl0));
-		pr_info("vdac: set reg 0x%02x=0x%08x, readback=0x%08x\n",
-			reg_cntl1, ctrl1, vdac_hiu_reg_read(reg_cntl1));
+	while (i < VDAC_CTRL_MAX) {
+		if (table[i].reg == VDAC_REG_MAX)
+			break;
+		if ((table[i].reg == reg) && (table[i].bit == bit)) {
+			vdac_ana_reg_setb(reg, value, bit, table[i].len);
+			if (vdac_debug_print) {
+				pr_info("vdac: %s: reg=0x%x set bit%d=0x%x, readback=0x%08x\n",
+					__func__, reg, bit, value,
+					vdac_ana_reg_read(reg));
+			}
+			ret = 0;
+			break;
+		}
+		i++;
 	}
+
+	return ret;
 }
 
 unsigned int vdac_get_reg_addr(unsigned int index)
@@ -488,6 +654,59 @@ int vdac_enable_check_cvbs(void)
 	return (pri_flag & VDAC_MODULE_CVBS_OUT) ? 1 : 0;
 }
 
+static void vdac_dev_disable(void)
+{
+	if (!s_vdac_data)
+		return;
+
+	mutex_lock(&vdac_mutex);
+	if ((pri_flag & VDAC_MODULE_MASK) == 0) {
+		mutex_unlock(&vdac_mutex);
+		return;
+	}
+
+	if (pri_flag & VDAC_MODULE_CVBS_OUT)
+		vdac_enable_cvbs_out(0);
+	if (pri_flag & VDAC_MODULE_AVOUT_ATV)
+		vdac_enable_avout_atv(0);
+	if (pri_flag & VDAC_MODULE_AVOUT_AV)
+		vdac_enable_avout_av(0);
+	if (pri_flag & VDAC_MODULE_DTV_DEMOD)
+		vdac_enable_dtv_demod(0);
+
+	mutex_unlock(&vdac_mutex);
+
+	if (vdac_debug_print) {
+		pr_info("private_flag:             0x%02x\n"
+			"reg_cntl0:                0x%02x=0x%08x\n"
+			"reg_cntl1:                0x%02x=0x%08x\n",
+			pri_flag,
+			s_vdac_data->reg_cntl0,
+			vdac_ana_reg_read(s_vdac_data->reg_cntl0),
+			s_vdac_data->reg_cntl1,
+			vdac_ana_reg_read(s_vdac_data->reg_cntl1));
+	}
+}
+
+static void vdac_dev_enable(void)
+{
+	if (!s_vdac_data)
+		return;
+	if ((pri_flag & VDAC_MODULE_MASK) == 0)
+		return;
+
+	if (vdac_debug_print) {
+		pr_info("private_flag:             0x%02x\n"
+			"reg_cntl0:                0x%02x=0x%08x\n"
+			"reg_cntl1:                0x%02x=0x%08x\n",
+			pri_flag,
+			s_vdac_data->reg_cntl0,
+			vdac_ana_reg_read(s_vdac_data->reg_cntl0),
+			s_vdac_data->reg_cntl1,
+			vdac_ana_reg_read(s_vdac_data->reg_cntl1));
+	}
+}
+
 /* ********************************************************* */
 static ssize_t vdac_info_show(struct class *class,
 		struct class_attribute *attr, char *buf)
@@ -506,9 +725,9 @@ static ssize_t vdac_info_show(struct class *class,
 		"debug_print:              %d\n",
 		s_vdac_data->name, s_vdac_data->cpu_id, pri_flag,
 		s_vdac_data->reg_cntl0,
-		vdac_hiu_reg_read(s_vdac_data->reg_cntl0),
+		vdac_ana_reg_read(s_vdac_data->reg_cntl0),
 		s_vdac_data->reg_cntl1,
-		vdac_hiu_reg_read(s_vdac_data->reg_cntl1),
+		vdac_ana_reg_read(s_vdac_data->reg_cntl1),
 		vdac_debug_print);
 
 	return len;
@@ -722,43 +941,23 @@ static int __exit aml_vdac_remove(struct platform_device *pdev)
 static int amvdac_drv_suspend(struct platform_device *pdev,
 		pm_message_t state)
 {
-	if (s_vdac_data->cpu_id == VDAC_CPU_TXL ||
-		s_vdac_data->cpu_id == VDAC_CPU_TXLX)
-		vdac_hiu_reg_write(s_vdac_data->reg_cntl0, 0);
-	else if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
-		s_vdac_data->cpu_id == VDAC_CPU_TM2)
-		vdac_ctrl_config(0, s_vdac_data->reg_cntl1, 7);
-	pr_info("%s: suspend module\n", __func__);
+	vdac_dev_disable();
+	pr_info("%s: private_flag:0x%x\n", __func__, pri_flag);
 	return 0;
 }
 
 static int amvdac_drv_resume(struct platform_device *pdev)
 {
-	/*0xbc[7] for bandgap enable: 0:enable,1:disable*/
-	if (s_vdac_data->cpu_id == VDAC_CPU_TL1 ||
-		s_vdac_data->cpu_id == VDAC_CPU_TM2) {
-		vdac_ctrl_config(1, s_vdac_data->reg_cntl1, 7);
-	}
-	pr_info("%s: resume module\n", __func__);
+	vdac_dev_enable();
+	pr_info("%s: private_flag:0x%x\n", __func__, pri_flag);
 	return 0;
 }
 #endif
 
 static void amvdac_drv_shutdown(struct platform_device *pdev)
 {
-	unsigned int cntl0, cntl1;
-
-	pr_info("%s: shutdown module, private_flag:0x%x\n",
-		__func__, pri_flag);
-	cntl0 = 0x0;
-	if (s_vdac_data->cpu_id == VDAC_CPU_TXL ||
-		s_vdac_data->cpu_id == VDAC_CPU_TXLX)
-		cntl1 = 0x0;
-	else if (s_vdac_data->cpu_id >= VDAC_CPU_TL1)
-		cntl1 = 0x80;
-	else
-		cntl1 = 0x8;
-	vdac_set_ctrl0_ctrl1(cntl0, cntl1);
+	vdac_dev_disable();
+	pr_info("%s: private_flag:0x%x\n", __func__, pri_flag);
 }
 
 static struct platform_driver aml_vdac_driver = {

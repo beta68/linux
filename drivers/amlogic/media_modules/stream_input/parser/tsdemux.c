@@ -39,9 +39,10 @@
 
 #include "../../frame_provider/decoder/utils/vdec.h"
 #include <linux/amlogic/media/utils/vdec_reg.h>
-#include "streambuf_reg.h"
-#include "streambuf.h"
+#include "../amports/streambuf_reg.h"
+#include "../amports/streambuf.h"
 #include <linux/amlogic/media/utils/amports_config.h>
+#include <linux/amlogic/media/frame_sync/tsync_pcr.h>
 
 #include "tsdemux.h"
 #include <linux/reset.h>
@@ -223,6 +224,11 @@ static int tsdemux_config(void)
 
 static void tsdemux_pcr_set(unsigned int pcr);
 /*TODO irq*/
+/* bit 15 ---------------*/
+/* bit 12 --VIDEO_PTS[32]*/
+/* bit 0  ---------------*/
+/*Read the 13th bit of STB_PTS_DTS_STATUS register
+correspond to the highest bit of video pts*/
 static irqreturn_t tsdemux_isr(int irq, void *dev_id)
 {
 	u32 int_status = 0;
@@ -242,11 +248,18 @@ static irqreturn_t tsdemux_isr(int irq, void *dev_id)
 	if (int_status & (1 << NEW_PDTS_READY)) {
 		if (!enable_demux_driver()) {
 			u32 pdts_status = READ_DEMUX_REG(STB_PTS_DTS_STATUS);
+			u64 vpts;
+
+			vpts = READ_MPEG_REG(VIDEO_PTS_DEMUX);
+			vpts &= 0x00000000FFFFFFFF;
+			if (pdts_status & 0x1000) {
+				vpts = vpts | (1LL<<32);
+			}
 
 			if (pdts_status & (1 << VIDEO_PTS_READY))
-				pts_checkin_wrptr(PTS_TYPE_VIDEO,
+				pts_checkin_wrptr_pts33(PTS_TYPE_VIDEO,
 					READ_DEMUX_REG(VIDEO_PDTS_WR_PTR),
-					READ_DEMUX_REG(VIDEO_PTS_DEMUX));
+					vpts);
 
 			if (pdts_status & (1 << AUDIO_PTS_READY))
 				pts_checkin_wrptr(PTS_TYPE_AUDIO,
@@ -258,13 +271,18 @@ static irqreturn_t tsdemux_isr(int irq, void *dev_id)
 #define DMX_READ_REG(i, r)\
 	((i) ? ((i == 1) ? READ_DEMUX_REG(r##_2) : \
 		READ_DEMUX_REG(r##_3)) : READ_DEMUX_REG(r))
-
+			u64 vpts;
 			u32 pdts_status = DMX_READ_REG(id, STB_PTS_DTS_STATUS);
+			vpts = DMX_READ_REG(id, VIDEO_PTS_DEMUX);
+			vpts &= 0x00000000FFFFFFFF;
+			if (pdts_status & 0x1000) {
+				vpts = vpts | (1LL<<32);
+			}
 
 			if (pdts_status & (1 << VIDEO_PTS_READY))
-				pts_checkin_wrptr(PTS_TYPE_VIDEO,
+				pts_checkin_wrptr_pts33(PTS_TYPE_VIDEO,
 					DMX_READ_REG(id, VIDEO_PDTS_WR_PTR),
-					DMX_READ_REG(id, VIDEO_PTS_DEMUX));
+					vpts);
 
 			if (pdts_status & (1 << AUDIO_PTS_READY))
 				pts_checkin_wrptr(PTS_TYPE_AUDIO,
@@ -385,6 +403,7 @@ static int reset_pcr_regs(void)
 {
 	u32 pcr_num;
 	u32 pcr_regs = 0;
+
 	if (curr_pcr_id >= 0x1FFF)
 		return 0;
 	/* set paramater to fetch pcr */
@@ -597,7 +616,7 @@ s32 tsdemux_init(u32 vid, u32 aid, u32 sid, u32 pcrid, bool is_hevc,
 	WRITE_AIU_REG(AIU_MEM_AIFIFO_BUF_CNTL, MEM_BUFCTRL_INIT);
 	CLEAR_AIU_REG_MASK(AIU_MEM_AIFIFO_BUF_CNTL, MEM_BUFCTRL_INIT);
 
-	if (!enable_demux_driver()) {
+	if (!enable_demux_driver() || ((sid > 0) && (sid < 0x1fff))) {
 		WRITE_PARSER_REG(PARSER_SUB_START_PTR, parser_sub_start_ptr);
 		WRITE_PARSER_REG(PARSER_SUB_END_PTR, parser_sub_end_ptr);
 		WRITE_PARSER_REG(PARSER_SUB_RP, parser_sub_rp);
@@ -606,20 +625,24 @@ s32 tsdemux_init(u32 vid, u32 aid, u32 sid, u32 pcrid, bool is_hevc,
 			(7 << ES_SUB_WR_ENDIAN_BIT) | ES_SUB_MAN_RD_PTR);
 
 	/* #if MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON8 */
-	if (has_hevc_vdec())
-		r = pts_start((is_hevc) ? PTS_TYPE_HEVC : PTS_TYPE_VIDEO);
-	else
-		/* #endif */
-		r = pts_start(PTS_TYPE_VIDEO);
-
-	if (r < 0) {
-		pr_info("Video pts start failed.(%d)\n", r);
-		goto err1;
+	if (vid != 0xffff) {
+		if (has_hevc_vdec())
+			r = pts_start((is_hevc) ? PTS_TYPE_HEVC : PTS_TYPE_VIDEO);
+		else
+			/* #endif */
+			r = pts_start(PTS_TYPE_VIDEO);
+		if ((r < 0) && (r != -EBUSY)) {
+			pr_info("Video pts start failed.(%d)\n", r);
+			goto err1;
+		}
 	}
-	r = pts_start(PTS_TYPE_AUDIO);
-	if (r < 0) {
-		pr_info("Audio pts start failed.(%d)\n", r);
-		goto err2;
+
+	if (aid != 0xffff) {
+		r = pts_start(PTS_TYPE_AUDIO);
+		if ((r < 0) && (r != -EBUSY)) {
+			pr_info("Audio pts start failed.(%d)\n", r);
+			goto err2;
+		}
 	}
 	/*TODO irq */
 
@@ -743,6 +766,9 @@ void tsdemux_release(void)
 	WRITE_PARSER_REG(PARSER_VIDEO_RP, 0);
 #endif
 
+	if (enable_demux_driver())
+		tsdemux_reset();
+
 	/* #if MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON6 */
 	/*TODO clk */
 	/*
@@ -759,7 +785,17 @@ static int limited_delay_check(struct file *file,
 		struct stream_buf_s *abuf,
 		const char __user *buf, size_t count)
 {
+	struct port_priv_s *priv = (struct port_priv_s *)file->private_data;
+	struct stream_port_s *port = priv->port;
 	int write_size;
+
+	if (!((port->flag & PORT_FLAG_VID) &&
+		(port->flag & PORT_FLAG_AID))) {
+		struct stream_buf_s *buf =
+			(port->flag & PORT_FLAG_VID) ? vbuf : abuf;
+
+		return min_t(int, count, stbuf_space(buf));
+	}
 
 	if (vbuf->max_buffer_delay_ms > 0 && abuf->max_buffer_delay_ms > 0 &&
 		stbuf_level(vbuf) > 1024 && stbuf_level(abuf) > 256) {
@@ -802,7 +838,6 @@ ssize_t drm_tswrite(struct file *file,
 {
 	s32 r;
 	u32 realcount = count;
-	u32 re_count = count;
 	u32 havewritebytes = 0;
 
 	struct drm_info tmpmm;
@@ -861,12 +896,14 @@ ssize_t drm_tswrite(struct file *file,
 					r = stbuf_wait_space(vbuf, wait_size);
 
 					if (r < 0) {
-						pr_info
-						("write no space--- ");
-						pr_info
-						("no space,%d--%d,r-%d\n",
-						 stbuf_space(vbuf),
-						 stbuf_space(abuf), r);
+						if (r != -EAGAIN)
+							pr_info
+							("write no space--- ");
+						if (r != -EAGAIN)
+							pr_info
+							("no space,%d--%d,r-%d\n",
+							stbuf_space(vbuf),
+							stbuf_space(abuf), r);
 						return r;
 					}
 				}
@@ -888,13 +925,30 @@ ssize_t drm_tswrite(struct file *file,
 			}
 		}
 
-		write_size = min(stbuf_space(vbuf), stbuf_space(abuf));
-		write_size = min(count, write_size);
+		if ((port->flag & PORT_FLAG_VID) &&
+			(port->flag & PORT_FLAG_AID)) {
+			write_size = min(stbuf_space(vbuf), stbuf_space(abuf));
+			write_size = min(count, write_size);
+		} else {
+			struct stream_buf_s *buf =
+				(port->flag & PORT_FLAG_VID) ? vbuf : abuf;
+
+			write_size = min_t(int, count, stbuf_space(buf));
+		}
 		/* pr_info("write_size = %d,count = %d,\n",*/
 		   /*write_size, count); */
-		if (write_size > 0)
-			r = _tsdemux_write((const char __user *)realbuf,
-					 write_size, isphybuf);
+		if (write_size > 0) {
+			r = _tsdemux_write((const char __user *)realbuf + havewritebytes,
+				write_size, isphybuf);
+			if (r < 0) {
+				if (r != -EAGAIN)
+					pr_info
+					("vspace %d--aspace %d,r-%d\n",
+					stbuf_space(vbuf),
+					stbuf_space(abuf), r);
+				return r;
+			}
+		}
 		else
 			return -EAGAIN;
 
@@ -905,11 +959,12 @@ ssize_t drm_tswrite(struct file *file,
 		if (havewritebytes == realcount)
 			break;	/* write ok; */
 		else if (havewritebytes > realcount)
-			pr_info(" error ! write too much\n");
+			pr_info(" error ! write too much havewritebytes = %u, r = %u\n",
+			(u32)havewritebytes,(u32)realcount);
 
 		count -= r;
 	}
-	return re_count;
+	return havewritebytes;
 }
 
 ssize_t tsdemux_write(struct file *file,
@@ -969,6 +1024,12 @@ ssize_t tsdemux_write(struct file *file,
 		return -EAGAIN;
 }
 
+int get_discontinue_counter(void)
+{
+	return discontinued_counter;
+}
+EXPORT_SYMBOL(get_discontinue_counter);
+
 static ssize_t show_discontinue_counter(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
@@ -1009,16 +1070,19 @@ void tsdemux_change_avid(unsigned int vid, unsigned int aid)
 		WRITE_DEMUX_REG(FM_WR_ADDR, 0x8000);
 		while (READ_DEMUX_REG(FM_WR_ADDR) & 0x8000)
 			;
-	} else {
-		curr_vid_id = vid;
-		curr_aud_id = aid;
-
-		tsdemux_set_vid(vid);
-		tsdemux_set_aid(aid);
-
+	}
+	else
+	{
+		if (curr_vid_id != vid) {
+			tsdemux_set_vid(vid);
+			curr_vid_id = vid;
+		}
+		if (curr_aud_id != aid) {
+			tsdemux_set_aid(aid);
+			curr_aud_id = aid;
+		}
 		reset_pcr_regs();
 	}
-
 }
 
 void tsdemux_change_sid(unsigned int sid)
@@ -1043,10 +1107,11 @@ void tsdemux_change_sid(unsigned int sid)
 void tsdemux_audio_reset(void)
 {
 	ulong flags;
+	unsigned long xflags = 0;
 
-	DEFINE_SPINLOCK(lock);
-
-	spin_lock_irqsave(&lock, flags);
+	spin_lock_irqsave(&demux_ops_lock, flags);
+	if (demux_ops && demux_ops->hw_dmx_lock)
+		xflags = demux_ops->hw_dmx_lock(xflags);
 
 	WRITE_PARSER_REG(PARSER_AUDIO_WP,
 				   READ_AIU_REG(AIU_MEM_AIFIFO_START_PTR));
@@ -1062,18 +1127,21 @@ void tsdemux_audio_reset(void)
 	WRITE_AIU_REG(AIU_MEM_AIFIFO_BUF_CNTL, MEM_BUFCTRL_INIT);
 	CLEAR_AIU_REG_MASK(AIU_MEM_AIFIFO_BUF_CNTL, MEM_BUFCTRL_INIT);
 
-	spin_unlock_irqrestore(&lock, flags);
-
+	if (demux_ops && demux_ops->hw_dmx_unlock)
+		demux_ops->hw_dmx_unlock(xflags);
+	spin_unlock_irqrestore(&demux_ops_lock, flags);
 }
 
 void tsdemux_sub_reset(void)
 {
 	ulong flags;
-	DEFINE_SPINLOCK(lock);
 	u32 parser_sub_start_ptr;
 	u32 parser_sub_end_ptr;
+	unsigned long xflags = 0;
 
-	spin_lock_irqsave(&lock, flags);
+	spin_lock_irqsave(&demux_ops_lock, flags);
+	if (demux_ops && demux_ops->hw_dmx_lock)
+		xflags = demux_ops->hw_dmx_lock(xflags);
 
 	parser_sub_start_ptr = READ_PARSER_REG(PARSER_SUB_START_PTR);
 	parser_sub_end_ptr = READ_PARSER_REG(PARSER_SUB_END_PTR);
@@ -1085,8 +1153,9 @@ void tsdemux_sub_reset(void)
 	SET_PARSER_REG_MASK(PARSER_ES_CONTROL,
 			(7 << ES_SUB_WR_ENDIAN_BIT) | ES_SUB_MAN_RD_PTR);
 
-	spin_unlock_irqrestore(&lock, flags);
-
+	if (demux_ops && demux_ops->hw_dmx_unlock)
+		demux_ops->hw_dmx_unlock(xflags);
+	spin_unlock_irqrestore(&demux_ops_lock, flags);
 }
 
 void tsdemux_set_skipbyte(int skipbyte)
@@ -1194,5 +1263,54 @@ void tsdemux_tsync_func_init(void)
 	register_tsync_callbackfunc(
 		TSYNC_STBUF_SIZE, (void *)(stbuf_size));
 }
+
+static int tsparser_stbuf_init(struct stream_buf_s *stbuf,
+			       struct vdec_s *vdec)
+{
+	int ret = -1;
+
+	ret = stbuf_init(stbuf, vdec);
+	if (ret)
+		goto out;
+
+	ret = tsdemux_init(stbuf->pars.vid,
+			   stbuf->pars.aid,
+			   stbuf->pars.sid,
+			   stbuf->pars.pcrid,
+			   stbuf->is_hevc,
+			   vdec);
+	if (ret)
+		goto out;
+
+	tsync_pcr_start();
+
+	stbuf->flag |= BUF_FLAG_IN_USE;
+out:
+	return ret;
+}
+
+static void tsparser_stbuf_release(struct stream_buf_s *stbuf)
+{
+	tsync_pcr_stop();
+
+	tsdemux_release();
+
+	stbuf_release(stbuf);
+}
+
+static struct stream_buf_ops tsparser_stbuf_ops = {
+	.init	= tsparser_stbuf_init,
+	.release = tsparser_stbuf_release,
+	.get_wp	= parser_get_wp,
+	.set_wp	= parser_set_wp,
+	.get_rp	= parser_get_rp,
+	.set_rp	= parser_set_rp,
+};
+
+struct stream_buf_ops *get_tsparser_stbuf_ops(void)
+{
+	return &tsparser_stbuf_ops;
+}
+EXPORT_SYMBOL(get_tsparser_stbuf_ops);
 
 

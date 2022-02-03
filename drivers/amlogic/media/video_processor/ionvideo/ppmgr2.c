@@ -17,52 +17,6 @@
 
 #include "ionvideo.h"
 
-#define IONVIDEO_CANVAS_COUNT 5
-int ionvideo_canvas_id[IONVIDEO_CANVAS_COUNT] = {-1, -1, -1, -1, -1};
-
-void ionvideo_alloc_canvas(void)
-{
-	const char *owner = "ionvideo";
-	int i;
-
-	if (ionvideo_canvas_id[0] != -1 &&
-	    ionvideo_canvas_id[1] != -1 &&
-	    ionvideo_canvas_id[2] != -1 &&
-	    ionvideo_canvas_id[3] != -1 &&
-	    ionvideo_canvas_id[4] != -1)
-		return;
-
-	for (i = 0; i < IONVIDEO_CANVAS_COUNT; i++) {
-		if (ionvideo_canvas_id[i] == -1)
-			ionvideo_canvas_id[i]
-				= canvas_pool_map_alloc_canvas(owner);
-	}
-
-	for (i = 0; i < IONVIDEO_CANVAS_COUNT; i++) {
-		if (ionvideo_canvas_id[i] == -1) {
-			pr_err("ionvideo_alloc_canvas %x, %x, %x, %x, %x\n",
-			       ionvideo_canvas_id[0],
-			       ionvideo_canvas_id[1],
-			       ionvideo_canvas_id[2],
-			       ionvideo_canvas_id[3],
-			       ionvideo_canvas_id[4]);
-			break;
-		}
-	}
-}
-
-void ionvideo_free_canvas(void)
-{
-	int i;
-
-	for (i = 0; i < IONVIDEO_CANVAS_COUNT; i++) {
-		if (ionvideo_canvas_id[i] != -1) {
-			canvas_pool_map_free_canvas(ionvideo_canvas_id[i]);
-			ionvideo_canvas_id[i] = -1;
-		}
-	}
-}
-
 static inline void paint_mode_convert(int paint_mode, int *src_position,
 					int *dst_paint_position,
 					int *dst_plane_position)
@@ -163,51 +117,51 @@ static int get_input_format(struct vframe_s *vf)
 static inline void ge2d_src_config(struct vframe_s *vf,
 					struct config_para_ex_s *ge2d_config)
 {
-	struct vframe_s src_vf = *vf;
+	//struct vframe_s src_vf = *vf;
 	struct canvas_s src_cs0, src_cs1, src_cs2;
 
 	if (vf->canvas0Addr == (u32)-1) {
-		canvas_config_config(ionvideo_canvas_id[2],
-				     &src_vf.canvas0_config[0]);
+		canvas_config_config(PPMGR2_CANVAS_INDEX_SRC,
+			&vf->canvas0_config[0]);
 
-		if (src_vf.plane_num > 1)
-			canvas_config_config(ionvideo_canvas_id[3],
-					     &src_vf.canvas0_config[1]);
+		if (vf->plane_num > 1)
+			canvas_config_config(PPMGR2_CANVAS_INDEX_SRC + 1,
+				&vf->canvas0_config[1]);
 
-		if (src_vf.plane_num > 2)
-			canvas_config_config(ionvideo_canvas_id[4],
-					     &src_vf.canvas0_config[2]);
+		if (vf->plane_num > 2)
+			canvas_config_config(PPMGR2_CANVAS_INDEX_SRC + 2,
+					&vf->canvas0_config[2]);
 
-		src_vf.canvas0Addr =
-			ionvideo_canvas_id[2]
-			| (ionvideo_canvas_id[3] << 8)
-			| (ionvideo_canvas_id[4] << 16);
+		vf->canvas0Addr =
+			(PPMGR2_CANVAS_INDEX_SRC)
+			| ((PPMGR2_CANVAS_INDEX_SRC + 1) << 8)
+			| ((PPMGR2_CANVAS_INDEX_SRC + 2) << 16);
 
 		ge2d_config->src_planes[0].addr =
-				src_vf.canvas0_config[0].phy_addr;
+				vf->canvas0_config[0].phy_addr;
 		ge2d_config->src_planes[0].w =
-				src_vf.canvas0_config[0].width;
+				vf->canvas0_config[0].width;
 		ge2d_config->src_planes[0].h =
-				src_vf.canvas0_config[0].height;
+				vf->canvas0_config[0].height;
 		ge2d_config->src_planes[1].addr =
-				src_vf.canvas0_config[1].phy_addr;
+				vf->canvas0_config[1].phy_addr;
 		ge2d_config->src_planes[1].w =
-				src_vf.canvas0_config[1].width;
+				vf->canvas0_config[1].width;
 		ge2d_config->src_planes[1].h =
-				src_vf.canvas0_config[1].height << 1;
+				vf->canvas0_config[1].height << 1;
 
-		if (src_vf.plane_num == 3) {
+		if (vf->plane_num == 3) {
 			ge2d_config->src_planes[2].addr =
-					src_vf.canvas0_config[2].phy_addr;
+					vf->canvas0_config[2].phy_addr;
 			ge2d_config->src_planes[2].w =
-					src_vf.canvas0_config[2].width;
+					vf->canvas0_config[2].width;
 			ge2d_config->src_planes[2].h =
-					src_vf.canvas0_config[2].height << 1;
+					vf->canvas0_config[2].height << 1;
 		}
 	} else {
-		canvas_read(src_vf.canvas0Addr & 0xff, &src_cs0);
-		canvas_read(src_vf.canvas0Addr >> 8 & 0xff, &src_cs1);
-		canvas_read(src_vf.canvas0Addr >> 16 & 0xff, &src_cs2);
+		canvas_read(vf->canvas0Addr & 0xff, &src_cs0);
+		canvas_read(vf->canvas0Addr >> 8 & 0xff, &src_cs1);
+		canvas_read(vf->canvas0Addr >> 16 & 0xff, &src_cs2);
 		ge2d_config->src_planes[0].addr = src_cs0.addr;
 		ge2d_config->src_planes[0].w = src_cs0.width;
 		ge2d_config->src_planes[0].h = src_cs0.height;
@@ -226,9 +180,9 @@ static inline void ge2d_src_config(struct vframe_s *vf,
 	ge2d_config->src_key.key_enable = 0;
 	ge2d_config->src_key.key_mask = 0;
 	ge2d_config->src_key.key_mode = 0;
-	ge2d_config->src_para.canvas_index = src_vf.canvas0Addr;
+	ge2d_config->src_para.canvas_index = vf->canvas0Addr;
 	ge2d_config->src_para.mem_type = CANVAS_TYPE_INVALID;
-	ge2d_config->src_para.format = get_input_format(&src_vf);
+	ge2d_config->src_para.format = get_input_format(vf);
 	ge2d_config->src_para.fill_color_en = 0;
 	ge2d_config->src_para.fill_mode = 0;
 	ge2d_config->src_para.x_rev = 0;
@@ -236,12 +190,12 @@ static inline void ge2d_src_config(struct vframe_s *vf,
 	ge2d_config->src_para.color = 0xffffffff;
 	ge2d_config->src_para.top = 0;
 	ge2d_config->src_para.left = 0;
-	ge2d_config->src_para.width = src_vf.width;
+	ge2d_config->src_para.width = vf->width;
 
 	if (vf->type & VIDTYPE_INTERLACE)
-		ge2d_config->src_para.height = src_vf.height >> 1;
+		ge2d_config->src_para.height = vf->height >> 1;
 	else
-		ge2d_config->src_para.height = src_vf.height;
+		ge2d_config->src_para.height = vf->height;
 
 	ge2d_config->src2_para.mem_type = CANVAS_TYPE_INVALID;
 /* ppmgr2_printk(2, "vf_width is %d , vf_height is %d type:%p\n",
@@ -419,7 +373,7 @@ int ppmgr2_init(struct ppmgr2_device *ppd)
 	ppd->ge2d_fmt = 0;
 	ppd->dst_width = 0;
 	ppd->dst_height = 0;
-	for (i = 0; i < PPMGR2_MAX_CANVAS; i++) {
+	for (i = 0; i < IONVIDEO_POOL_SIZE; i++) {
 		ppd->phy_addr[i] = NULL;
 		ppd->canvas_id[i] = -1;
 	}
@@ -440,9 +394,9 @@ int ppmgr2_canvas_config(struct ppmgr2_device *ppd, int index)
 	canvas_width = ppd->dst_buffer_width;
 	canvas_height = ppd->dst_buffer_height;
 
-	if (index >= PPMGR2_MAX_CANVAS) {
+	if (index >= IONVIDEO_POOL_SIZE) {
 		pr_info("ppmgr2-dev: canvas index too large! %d>=%d\n",
-			index, PPMGR2_MAX_CANVAS);
+			index, IONVIDEO_POOL_SIZE);
 		return -1;
 	}
 
@@ -455,16 +409,34 @@ int ppmgr2_canvas_config(struct ppmgr2_device *ppd, int index)
 
 	if (ppd->ge2d_fmt == GE2D_FORMAT_M24_NV21 || ppd->ge2d_fmt
 		== GE2D_FORMAT_M24_NV12) {
-		canvas_config(ionvideo_canvas_id[0], (ulong)phy_addr,
-			      canvas_width, canvas_height, CANVAS_ADDR_NOWRAP,
-			      CANVAS_BLKMODE_LINEAR);
+		canvas_config(PPMGR2_CANVAS_INDEX, (ulong)phy_addr,
+				canvas_width, canvas_height, CANVAS_ADDR_NOWRAP,
+				CANVAS_BLKMODE_LINEAR);
 		canvas_config(
-			ionvideo_canvas_id[1],
+			PPMGR2_CANVAS_INDEX + 1,
 			(ulong)(phy_addr + (canvas_width * canvas_height)),
 			canvas_width, canvas_height >> 1, CANVAS_ADDR_NOWRAP,
 			CANVAS_BLKMODE_LINEAR);
-		ppd->canvas_id[index] = ionvideo_canvas_id[0]
-			| (ionvideo_canvas_id[1] << 8);
+		ppd->canvas_id[index] = (PPMGR2_CANVAS_INDEX)
+			| ((PPMGR2_CANVAS_INDEX + 1) << 8);
+	} else if (ppd->ge2d_fmt == GE2D_FORMAT_S8_Y) {
+		canvas_config(PPMGR2_CANVAS_INDEX, (ulong)phy_addr,
+				canvas_width, canvas_height, CANVAS_ADDR_NOWRAP,
+				CANVAS_BLKMODE_LINEAR);
+		canvas_config(
+			PPMGR2_CANVAS_INDEX + 1,
+			(ulong)(phy_addr + canvas_width * canvas_height),
+			canvas_width >> 1, canvas_height >> 1,
+			CANVAS_ADDR_NOWRAP, CANVAS_BLKMODE_LINEAR);
+		canvas_config(
+			PPMGR2_CANVAS_INDEX + 2,
+			(ulong)(phy_addr + (canvas_width * canvas_height * 5
+				>> 2)),
+			canvas_width >> 1, canvas_height >> 1,
+			CANVAS_ADDR_NOWRAP, CANVAS_BLKMODE_LINEAR);
+		ppd->canvas_id[index] = (PPMGR2_CANVAS_INDEX)
+			| ((PPMGR2_CANVAS_INDEX + 1) << 8)
+			| ((PPMGR2_CANVAS_INDEX + 2) << 16);
 	} else {
 		int bpp = 0;
 
@@ -479,10 +451,10 @@ int ppmgr2_canvas_config(struct ppmgr2_device *ppd, int index)
 			ppmgr2_printk(1, "Not support format!\n");
 			return -1;
 		}
-		canvas_config(ionvideo_canvas_id[0], (ulong)phy_addr,
-			      canvas_width * bpp, canvas_height,
-			      CANVAS_ADDR_NOWRAP, CANVAS_BLKMODE_LINEAR);
-		ppd->canvas_id[index] = ionvideo_canvas_id[0];
+		canvas_config(PPMGR2_CANVAS_INDEX, (ulong)phy_addr,
+				canvas_width * bpp, canvas_height,
+				CANVAS_ADDR_NOWRAP, CANVAS_BLKMODE_LINEAR);
+		ppd->canvas_id[index] = PPMGR2_CANVAS_INDEX;
 
 	}
 	ppmgr2_printk(2, "canvas[%d] phy_addr:%p width:%d height:%d\n", index,
@@ -532,7 +504,6 @@ int ppmgr2_process(struct vframe_s *vf, struct ppmgr2_device *ppd, int index)
 	}
 
 	mutex_lock(ppd->ge2d_canvas_mutex);
-	ionvideo_alloc_canvas();
 	ppmgr2_canvas_config(ppd, index);
 	dst_canvas_id = ppd->canvas_id[index];
 	src_position[0] = 0;

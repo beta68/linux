@@ -38,6 +38,8 @@ enum rdma_ver_e {
 enum cpu_ver_e {
 	CPU_G12B,
 	CPU_NORMAL,
+        CPU_TL1,
+        CPU_SC2,
 };
 
 struct rdma_device_data_s {

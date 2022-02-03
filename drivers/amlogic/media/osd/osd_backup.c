@@ -235,7 +235,7 @@ static struct reg_item freescale_recovery_table[] = {
 	{VPP_OSD_HSC_CTRL0, 0x0, 0x007b7b7f, 1},
 	{VPP_OSD_HSC_INI_PAT_CTRL, 0x0, 0x0000ff77, 1},
 	{VPP_OSD_SC_DUMMY_DATA, 0x0, 0xffffffff, 0},
-	{VPP_OSD_SC_CTRL0, 0x0, 0x00007ffb, 1},
+	{VPP_OSD_SC_CTRL0, 0x0, 0x00007fff, 1},
 	{VPP_OSD_SCI_WH_M1, 0x0, 0x1fff1fff, 1},
 	{VPP_OSD_SCO_H_START_END, 0x0, 0x0fff0fff, 1},
 	{VPP_OSD_SCO_V_START_END, 0x0, 0x0fff0fff, 1},
@@ -1326,6 +1326,7 @@ static int update_recovery_item_g12a(u32 addr, u32 value)
 
 static s32 get_recovery_item_g12a(u32 addr, u32 *value, u32 *mask)
 {
+	int cpu_id = osd_hw.osd_meson_dev.cpu_id;
 	u32 base, size;
 	int i;
 	struct reg_item *table = NULL;
@@ -1533,7 +1534,16 @@ static s32 get_recovery_item_g12a(u32 addr, u32 *value, u32 *mask)
 		if (table->recovery == 1) {
 			u32 regmask = table->mask;
 			u32 real_value = osd_reg_read(addr);
+			u32 temp1 = 0, temp2 = 0;
 
+			if ((cpu_id <= __MESON_CPU_MAJOR_ID_SM1) &&
+			    (addr == VIU_OSD_BLEND_CTRL1)) {
+				/* hw bug, >=bit6 need << 2*/
+				temp1 = real_value & 0x3f;
+				temp2 = (real_value & (~0x3f)) << 2;
+				temp2 |= temp1;
+				real_value = temp2;
+			}
 			if (enable_vd_zorder &&
 				(addr == OSD2_BLEND_SRC_CTRL)) {
 				ret = 1;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
  * drivers/amlogic/media/di_multi/di_post.c
  *
@@ -47,13 +48,13 @@ void dpost_init(void)
 {/*reg:*/
 	struct di_hpst_s  *pst = get_hw_pst();
 
-	pst->state = eDI_PST_ST_IDLE;
+	pst->state = EDI_PST_ST_IDLE;
 
 	/*timer out*/
 	di_tout_int(&pst->tout, 40);	/*ms*/
 }
 
-void pw_use_hw_post(enum eDI_SUB_ID channel, bool on)
+void pw_use_hw_post(enum EDI_SUB_ID channel, bool on)
 {
 	struct di_hpst_s  *post = get_hw_pst();
 
@@ -62,12 +63,12 @@ void pw_use_hw_post(enum eDI_SUB_ID channel, bool on)
 		post->curr_ch = channel;
 }
 
-static bool pw_try_sw_ch_next_post(enum eDI_SUB_ID channel)
+static bool pw_try_sw_ch_next_post(enum EDI_SUB_ID channel)
 {
 	bool ret = false;
 
 	struct di_hpst_s *post = get_hw_pst();
-	enum eDI_SUB_ID lst_ch, nch;
+	enum EDI_SUB_ID lst_ch, nch;
 
 	lst_ch = channel;
 
@@ -76,7 +77,7 @@ static bool pw_try_sw_ch_next_post(enum eDI_SUB_ID channel)
 		return false;
 
 	if (nch != channel)
-		dim_ddbg_mod_save(eDI_DBG_MOD_POST_CH_CHG, nch, 0);/*dbg*/
+		dim_ddbg_mod_save(EDI_DBG_MOD_POST_CH_CHG, nch, 0);/*dbg*/
 
 	post->curr_ch = nch;
 	post->hw_flg_busy_post = true;
@@ -120,7 +121,8 @@ bool dpst_step_check(void)
 	ch = pst->curr_ch;
 	ppost = get_post_stru(ch);
 
-	if (queue_empty(ch, QUEUE_POST_DOING)) {
+	//if (queue_empty(ch, QUEUE_POST_DOING)) {
+	if (di_que_is_empty(ch, QUE_POST_DOING)) {
 		ppost->post_peek_underflow++;
 		pst->state--;
 		return reflesh;
@@ -140,34 +142,33 @@ bool dpst_step_set(void)
 	struct di_hpst_s  *pst = get_hw_pst();
 	unsigned int ch;
 	bool reflesh = false;
-	ulong flags = 0;
+//ary 2020-12-09	ulong flags = 0;
+	struct di_ch_s *pch;
 
 	ch = pst->curr_ch;
 	ppost = get_post_stru(ch);
 
-	di_buf = get_di_buf_head(ch, QUEUE_POST_DOING);
+	//di_buf = get_di_buf_head(ch, QUEUE_POST_DOING);
+	di_buf = di_que_peek(ch, QUE_POST_DOING);
 	if (dim_check_di_buf(di_buf, 20, ch)) {
 		PR_ERR("%s:err1\n", __func__);
 		return reflesh;
 	}
 
 	vf_p = di_buf->vframe;
-	if (ppost->run_early_proc_fun_flag) {
-		if (vf_p->early_process_fun)
-			vf_p->early_process_fun = dim_do_post_wr_fun;
-	}
 
+	pch = get_chdata(ch);
 	dim_print("%s:pr_index=%d\n", __func__, di_buf->process_fun_index);
 	if (di_buf->process_fun_index) {	/*not bypass?*/
 
 		ppost->post_wr_cnt++;
-		spin_lock_irqsave(&plist_lock, flags);
+//ary 2020-12-09		spin_lock_irqsave(&plist_lock, flags);
 		dim_post_process(di_buf, 0, vf_p->width - 1,
 				 0, vf_p->height - 1, vf_p);
-		spin_unlock_irqrestore(&plist_lock, flags);
+//ary 2020-12-09		spin_unlock_irqrestore(&plist_lock, flags);
 
 		/*begin to count timer*/
-		di_tout_contr(eDI_TOUT_CONTR_EN, &pst->tout);
+		di_tout_contr(EDI_TOUT_CONTR_EN, &pst->tout);
 
 		ppost->post_de_busy = 1;
 		ppost->irq_time = cur_to_msecs();
@@ -180,7 +181,7 @@ bool dpst_step_set(void)
 		pst->flg_int_done = 1;
 
 		/*state*/
-		pst->state++;/*pst->state = eDI_PST_ST_DONE;*/
+		pst->state++;/*pst->state = EDI_PST_ST_DONE;*/
 		reflesh = true;
 	}
 	ppost->cur_post_buf = di_buf;
@@ -194,7 +195,7 @@ bool dpst_step_wait_int(void)
 	unsigned int ch;
 	struct di_post_stru_s *ppost;
 	bool reflesh = false;
-	ulong flags = 0;
+	//ary 2020-12-07 ulong flags = 0;
 
 	ch = pst->curr_ch;
 
@@ -202,23 +203,24 @@ bool dpst_step_wait_int(void)
 		  pst->curr_ch, pst->flg_int_done);
 	if (pst->flg_int_done) {
 		/*finish to count timer*/
-		di_tout_contr(eDI_TOUT_CONTR_FINISH, &pst->tout);
-		spin_lock_irqsave(&plist_lock, flags);
+		di_tout_contr(EDI_TOUT_CONTR_FINISH, &pst->tout);
+		//ary 2020-12-07 spin_lock_irqsave(&plist_lock, flags);
 		dim_post_de_done_buf_config(ch);
-		spin_unlock_irqrestore(&plist_lock, flags);
+		//ary 2020-12-07 spin_unlock_irqrestore(&plist_lock, flags);
 		pst->flg_int_done = false;
 		/*state*/
-		pst->state = eDI_PST_ST_IDLE;
+		pst->state = EDI_PST_ST_IDLE;
 		reflesh = true;
 	} else {
 		/*check if timeout:*/
-		if (di_tout_contr(eDI_TOUT_CONTR_CHECK, &pst->tout)) {
+		if (di_tout_contr(EDI_TOUT_CONTR_CHECK, &pst->tout)) {
 			ppost = get_post_stru(ch);
 			PR_WARN("ch[%d]:post timeout[%d]\n", ch,
-				ppost->cur_post_buf->seq);
-			dim_ddbg_mod_save(eDI_DBG_MOD_POST_TIMEOUT, ch, 0);
+				ppost->cur_post_buf->seq_post);
+			hpst_timeout_read();
+			dim_ddbg_mod_save(EDI_DBG_MOD_POST_TIMEOUT, ch, 0);
 			/*state*/
-			pst->state = eDI_PST_ST_TIMEOUT;
+			pst->state = EDI_PST_ST_TIMEOUT;
 			reflesh = true;
 		}
 	}
@@ -229,10 +231,7 @@ void dpst_timeout(unsigned int ch)
 {
 	hpst_dbg_mem_pd_trig(0);
 	post_close_new();
-	#if 0
-	di_post_set_flow(1, eDI_POST_FLOW_STEP1_STOP);
-	di_post_reset();
-	#endif
+
 	dimh_pst_trig_resize();
 }
 
@@ -241,17 +240,18 @@ bool dpst_step_timeout(void)
 	struct di_hpst_s  *pst = get_hw_pst();
 	unsigned int ch;
 	bool reflesh = false;
-	ulong flags = 0;
+	//ary 2020-12-07 ulong flags = 0;
 
 	ch = pst->curr_ch;
 	dpst_timeout(ch);
-	spin_lock_irqsave(&plist_lock, flags);
+	//ary 2020-12-07 spin_lock_irqsave(&plist_lock, flags);
 	dim_post_de_done_buf_config(ch);
-	spin_unlock_irqrestore(&plist_lock, flags);
+	//ary 2020-12-07 spin_unlock_irqrestore(&plist_lock, flags);
 	pst->flg_int_done = false;
+	pst->flg_have_set = false;
 
 	/*state*/
-	pst->state = eDI_PST_ST_IDLE;
+	pst->state = EDI_PST_ST_IDLE;
 	reflesh = true;
 
 	return reflesh;
@@ -267,25 +267,25 @@ bool dpst_step_done(void)/*this step no use ?*/
 /*	dim_post_de_done_buf_config(ch);*/
 
 	/*state*/
-	pst->state = eDI_PST_ST_IDLE;
+	pst->state = EDI_PST_ST_IDLE;
 	reflesh = true;
 
 	return reflesh;
 }
 
 const struct di_func_tab_s di_pst_func_tab[] = {
-	{eDI_PST_ST_EXIT, NULL},
-	{eDI_PST_ST_IDLE, dpst_step_idle},
-	{eDI_PST_ST_CHECK, dpst_step_check},
-	{eDI_PST_ST_SET, dpst_step_set},
-	{eDI_PST_ST_WAIT_INT, dpst_step_wait_int},
-	{eDI_PST_ST_TIMEOUT, dpst_step_timeout},
-	{eDI_PST_ST_DONE, dpst_step_done},
+	{EDI_PST_ST_EXIT, NULL},
+	{EDI_PST_ST_IDLE, dpst_step_idle},
+	{EDI_PST_ST_CHECK, dpst_step_check},
+	{EDI_PST_ST_SET, dpst_step_set},
+	{EDI_PST_ST_WAIT_INT, dpst_step_wait_int},
+	{EDI_PST_ST_TIMEOUT, dpst_step_timeout},
+	{EDI_PST_ST_DONE, dpst_step_done},
 };
 
 const char * const dpst_state_name[] = {
 	"EXIT",
-	"IDLE",	/*swith to next channel?*/
+	"IDLE",	/*switch to next channel?*/
 	"CHECK",
 	"SET",
 	"WAIT_INT",
@@ -293,9 +293,9 @@ const char * const dpst_state_name[] = {
 	"DONE",
 };
 
-const char *dpst_state_name_get(enum eDI_PST_ST state)
+const char *dpst_state_name_get(enum EDI_PST_ST state)
 {
-	if (state > eDI_PST_ST_DONE)
+	if (state > EDI_PST_ST_DONE)
 		return "nothing";
 
 	return dpst_state_name[state];
@@ -309,28 +309,29 @@ bool dpst_can_exit(unsigned int ch)
 	if (ch != pst->curr_ch) {
 		ret = true;
 	} else {
-		if (pst->state <= eDI_PST_ST_IDLE)
+		if (pst->state <= EDI_PST_ST_IDLE)
 			ret = true;
 	}
-	pr_info("%s:ch[%d]:curr[%d]:stat[%s] ret[%d]\n",
-		__func__,
-		ch, pst->curr_ch,
-		dpst_state_name_get(pst->state),
-		ret);
+	if (!ret)
+		PR_INF("%s:ch[%d]:curr[%d]:stat[%s] ret[%d]\n",
+		       __func__,
+		       ch, pst->curr_ch,
+		       dpst_state_name_get(pst->state),
+		       ret);
 	return ret;
 }
 
 static bool dpst_process_step2(void)
 {
 	struct di_hpst_s  *pst = get_hw_pst();
-	enum eDI_PST_ST pst_st = pst->state;
+	enum EDI_PST_ST pst_st = pst->state;
 	unsigned int ch;
 
 	ch = pst->curr_ch;
-	if (pst_st > eDI_PST_ST_EXIT)
+	if (pst_st > EDI_PST_ST_EXIT)
 		dim_recycle_post_back(ch);
 
-	if ((pst_st <= eDI_PST_ST_DONE) &&
+	if (pst_st <= EDI_PST_ST_DONE &&
 	    di_pst_func_tab[pst_st].func)
 		return di_pst_func_tab[pst_st].func();
 	else

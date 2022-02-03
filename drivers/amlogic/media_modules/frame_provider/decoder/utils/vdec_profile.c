@@ -42,8 +42,6 @@ static uint dec_time_stat_reset;
 
 struct dentry *root, *event;
 
-#define MAX_INSTANCE_MUN  9
-
 struct vdec_profile_time_stat_s {
 	int time_6ms_less_cnt;
 	int time_6_9ms_cnt;
@@ -197,6 +195,8 @@ static void vdec_profile_statistics(struct vdec_s *vdec, int event)
 
 		time_stat->cb_lasttimestamp = timestamp;
 		time_stat->cb_cnt++;
+		ATRACE_COUNTER(vdec->dec_spend_time, timestamp - time_stat->run_lasttimestamp);
+		ATRACE_COUNTER(vdec->dec_spend_time_ave, div_u64(time_stat->run2cb_time_stat.time_total_us, time_stat->cb_cnt));
 	}
 
 	mutex_unlock(&vdec_profile_mutex);

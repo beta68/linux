@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
  * drivers/amlogic/media/di_multi/di_que.c
  *
@@ -26,7 +27,7 @@
 #include "di_data_l.h"
 #include "di_que.h"
 #include "di_vframe.h"
-
+#include "di_sys.h"
 #include "di_prc.h"
 
 const char * const di_name_new_que[QUE_NUB] = {
@@ -35,6 +36,9 @@ const char * const di_name_new_que[QUE_NUB] = {
 	"QUE_POST_FREE",	/*2*/
 	"QUE_POST_READY",	/*3*/
 	"QUE_POST_BACK",	/*4*/
+	"QUE_POST_DOING",
+//	"QUE_POST_KEEP",
+//	"QUE_POST_KEEP_BACK",
 	"QUE_DBG",
 /*	"QUE_NUB",*/
 
@@ -42,11 +46,11 @@ const char * const di_name_new_que[QUE_NUB] = {
 
 #define que_dbg		dim_print
 
-static void pw_queue_clear(unsigned int ch, enum QUE_TYPE qtype)
+void pw_queue_clear(unsigned int ch, enum QUE_TYPE qtype)
 {
 	struct di_ch_s *pch = get_chdata(ch);
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return;
 #endif
@@ -57,14 +61,14 @@ bool pw_queue_in(unsigned int ch, enum QUE_TYPE qtype, unsigned int buf_index)
 {
 	struct di_ch_s *pch = get_chdata(ch);
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return false;
 #endif
 	if (kfifo_in(&pch->fifo[qtype], &buf_index, sizeof(unsigned int))
 		!= sizeof(unsigned int))
 		return false;
-#if 0
+#ifdef MARK_HIS
 
 	/*below for debug: save in que*/
 	if (qtype <= QUE_POST_RECYC) {
@@ -85,13 +89,16 @@ bool pw_queue_out(unsigned int ch, enum QUE_TYPE qtype,
 	struct di_ch_s *pch = get_chdata(ch);
 	unsigned int index;
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return false;
 #endif
 	if (kfifo_out(&pch->fifo[qtype], &index, sizeof(unsigned int))
-		!= sizeof(unsigned int))
+		!= sizeof(unsigned int)) {
+		PR_ERR("%s:ch[%d],qtye[%d],buf[%d]\n",
+		       __func__, ch, qtype, *buf_index);
 		return false;
+	}
 
 	*buf_index = index;
 
@@ -104,7 +111,7 @@ static bool pw_queue_peek(unsigned int ch, enum QUE_TYPE qtype,
 	struct di_ch_s *pch = get_chdata(ch);
 	unsigned int index;
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return false;
 #endif
@@ -126,7 +133,7 @@ bool pw_queue_move(unsigned int ch, enum QUE_TYPE qtypef, enum QUE_TYPE qtypet,
 
 	/*struct di_post_buf_s *ppw;*/ /*debug only*/
 
-#if 0
+#ifdef MARK_HIS
 	if (qtypef >= QUE_NUB || qtypet >= QUE_NUB)
 		return false;
 #endif
@@ -142,14 +149,14 @@ bool pw_queue_move(unsigned int ch, enum QUE_TYPE qtypef, enum QUE_TYPE qtypet,
 	}
 
 	*oindex = index;
-#if 0
+#ifdef MARK_HIS
 	if (qtypet <= QUE_POST_RECYC) {
 		/*below for debug: save in que*/
 		if (index >= MAX_POST_BUF_NUM) {
 			pr_err("%s:err:overflow?[%d]\n", __func__, index);
 		} else {
-		ppw = &pch->lpost_buf[index];
-		ppw->in_qtype = qtypet;
+			ppw = &pch->lpost_buf[index];
+			ppw->in_qtype = qtypet;
 		}
 	}
 #endif
@@ -166,12 +173,15 @@ bool pw_queue_empty(unsigned int ch, enum QUE_TYPE qtype)
 	return false;
 }
 
+/**********************************************************
+ *
+ **********************************************************/
 int di_que_list_count(unsigned int ch, enum QUE_TYPE qtype)
 {
 	struct di_ch_s *pch = get_chdata(ch);
 	unsigned int length;
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return -1;
 #endif
@@ -207,7 +217,7 @@ bool di_que_list(unsigned int ch, enum QUE_TYPE qtype, unsigned int *outbuf,
 	memcpy(&pch->fifo[QUE_DBG], &pch->fifo[qtype],
 	       sizeof(pch->fifo[qtype]));
 
-#if 0
+#ifdef MARK_HIS
 	if (kfifo_is_empty(&pbm->fifo[QUE_DBG]))
 		pr_err("%s:err, kfifo can not copy?\n", __func__);
 
@@ -222,7 +232,7 @@ bool di_que_list(unsigned int ch, enum QUE_TYPE qtype, unsigned int *outbuf,
 		i++;
 	}
 	*rsize = di_que_list_count(ch, qtype);
-	#if 0	/*debug only*/
+	#ifdef MARK_HIS	/*debug only*/
 	que_dbg("%s: size[%d]\n", di_name_new_que[qtype], *rsize);
 	for (i = 0; i < *rsize; i++)
 		que_dbg("%d,", outbuf[i]);
@@ -238,7 +248,7 @@ int di_que_is_empty(unsigned int ch, enum QUE_TYPE qtype)
 {
 	struct di_ch_s *pch = get_chdata(ch);
 
-#if 0
+#ifdef MARK_HIS
 	if (qtype >= QUE_NUB)
 		return -1;
 #endif
@@ -248,9 +258,17 @@ int di_que_is_empty(unsigned int ch, enum QUE_TYPE qtype)
 void di_que_init(unsigned int ch)
 {
 	int i;
+	struct di_ch_s *pch = get_chdata(ch);
 
-	for (i = 0; i < QUE_NUB; i++)
+	for (i = 0; i < QUE_NUB; i++) {
+		if (//		    i == QUE_POST_KEEP		||
+		    //		    i == QUE_POST_KEEP_BACK	||
+		    i == QUE_POST_KEEP_RE_ALLOC)
+			continue;
 		pw_queue_clear(ch, i);
+	}
+
+	bufq_mem_clear(pch);
 }
 
 bool di_que_alloc(unsigned int ch)
@@ -273,15 +291,14 @@ bool di_que_alloc(unsigned int ch)
 		}
 		pch->flg_fifo[i] = 1;
 	}
-#if 0
-	/*canvas-----------------------------*/
+#ifdef MARK_HIS	/*canvas-----------------------------*/
 	canvas_alloc();
 #endif
 /*	pdp_clear();*/
 
 	if (!flg_err) {
 		/*pbm->flg_fifo = 1;*/
-		pr_info("%s:ok\n", __func__);
+		dbg_reg("%s:ok\n", __func__);
 		ret = true;
 	} else {
 		di_que_release(ch);
@@ -313,7 +330,7 @@ void di_que_release(unsigned int ch)
  ********************************************/
 struct di_buf_s *pw_qindex_2_buf(unsigned int ch, unsigned int qindex)
 {
-	union uDI_QBUF_INDEX index;
+	union UDI_QBUF_INDEX index;
 	struct di_buf_s *di_buf;
 	struct di_buf_pool_s *pbuf_pool = get_buf_pool(ch);
 
@@ -329,7 +346,7 @@ struct di_buf_s *pw_qindex_2_buf(unsigned int ch, unsigned int qindex)
 /********************************************/
 static unsigned int pw_buf_2_qindex(unsigned int ch, struct di_buf_s *pdi_buf)
 {
-	union	uDI_QBUF_INDEX index;
+	union	UDI_QBUF_INDEX index;
 
 	index.b.index = pdi_buf->index;
 	index.b.type = pdi_buf->type;
@@ -342,12 +359,14 @@ struct di_buf_s *di_que_out_to_di_buf(unsigned int ch, enum QUE_TYPE qtype)
 	unsigned int q_index;
 	struct di_buf_s *pdi_buf = NULL;
 
-	if (!pw_queue_peek(ch, qtype, &q_index))
+	if (!pw_queue_peek(ch, qtype, &q_index)) {
+		PR_ERR("%s:ch[%d]no buf\n", __func__, ch);
 		return pdi_buf;
+	}
 
 	pdi_buf = pw_qindex_2_buf(ch, q_index);
 	if (!pdi_buf) {
-		PR_ERR("di:err:%s:buf is null[%d]\n", __func__, q_index);
+		PR_ERR("%s:ch[%d]buf is null[0x%x]\n", __func__, ch, q_index);
 		return NULL;
 	}
 
@@ -363,12 +382,15 @@ bool di_que_out(unsigned int ch, enum QUE_TYPE qtype, struct di_buf_s *di_buf)
 	unsigned int q_index;
 	unsigned int q_index2;
 
-	if (!pw_queue_peek(ch, qtype, &q_index))
+	if (!pw_queue_peek(ch, qtype, &q_index)) {
+		PR_ERR("%s:no buf ch[%d], qtype[%d], buf[%d,%d]\n", __func__,
+		       ch, qtype, di_buf->type, di_buf->index);
 		return false;
-
+	}
 	q_index2 = pw_buf_2_qindex(ch, di_buf);
 	if (q_index2 != q_index) {
-		PR_ERR("di:%s:not map[%d,%d]\n", __func__, q_index2, q_index);
+		PR_ERR("di:%s:%d not map[0x%x,0x%x]\n", __func__,
+		       qtype, q_index2, q_index);
 		return false;
 	}
 
@@ -387,16 +409,17 @@ bool di_que_in(unsigned int ch, enum QUE_TYPE qtype, struct di_buf_s *di_buf)
 		return false;
 	}
 	if (di_buf->queue_index != -1) {
-		PR_ERR("di:%s:buf in some que,ch[%d],qt[%d],qi[%d],bi[%d]\n",
+		PR_ERR("%s:buf in some que,ch[%d],qt[%d],qi[%d],bi[%d]\n",
 		       __func__,
 		       ch, qtype, di_buf->queue_index, di_buf->index);
-		return false;
+		dump_stack();
+		di_buf->queue_index = -1;
 	}
 
 	q_index = pw_buf_2_qindex(ch, di_buf);
 
 	if (!pw_queue_in(ch, qtype, q_index)) {
-		PR_ERR("di:%s:err:can't que in,ch[%d],qtype[%d],q_index[%d]\n",
+		PR_ERR("%s:can't que in,ch[%d],qtype[%d],q_index[%d]\n",
 		       __func__,
 		       ch, qtype, q_index);
 		return false;
@@ -433,6 +456,41 @@ bool di_que_is_in_que(unsigned int ch, enum QUE_TYPE qtype,
 			ret = true;
 			break;
 		}
+	}
+	return ret;
+}
+
+/* clear and rebuild que*/
+bool di_que_out_not_fifo(unsigned int ch, enum QUE_TYPE qtype,
+			 struct di_buf_s *di_buf)
+{
+	unsigned int q_index;
+	unsigned int arr[MAX_FIFO_SIZE + 1];
+	unsigned int asize = 0;
+	unsigned int i;
+	bool ret = false;
+
+	if (!pw_queue_peek(ch, qtype, &q_index))
+		return false;
+
+	q_index = pw_buf_2_qindex(ch, di_buf);
+
+	di_que_list(ch, qtype, &arr[0], &asize);
+
+	pw_queue_clear(ch, qtype);
+
+	if (asize == 0) {
+		PR_ERR("%s:size 0\n", __func__);
+		return ret;
+	}
+
+	for (i = 0; i < asize; i++) {
+		if (arr[i] == q_index) {
+			ret = true;
+			di_buf->queue_index = -1;
+			continue;
+		}
+		pw_queue_in(ch, qtype, arr[i]);
 	}
 	return ret;
 }
@@ -477,14 +535,14 @@ void queue_init2(unsigned int channel)
 		q->out_idx = 0;
 		q->num = 0;
 		q->type = 0;
-		if ((i == QUEUE_RECYCLE) ||
-		    (i == QUEUE_DISPLAY) ||
-		    (i == QUEUE_TMP)     ||
-		    (i == QUEUE_POST_DOING))
+		if (i == QUEUE_RECYCLE ||
+		    i == QUEUE_DISPLAY ||
+		    i == QUEUE_TMP     ||
+		    i == QUEUE_POST_DOING)
 			q->type = 1;
 
-#if 0
-		if ((i == QUEUE_LOCAL_FREE) && dim_get_use_2_int_buf())
+#ifdef MARK_HIS
+		if (i == QUEUE_LOCAL_FREE && dim_get_use_2_int_buf())
 			q->type = 2;
 #endif
 	}
@@ -509,15 +567,15 @@ void queue_init(unsigned int channel, int local_buffer_num)
 		q->out_idx = 0;
 		q->num = 0;
 		q->type = 0;
-		if ((i == QUEUE_RECYCLE) ||
-		    (i == QUEUE_DISPLAY) ||
-		    (i == QUEUE_TMP)
+		if (i == QUEUE_RECYCLE ||
+		    i == QUEUE_DISPLAY ||
+		    i == QUEUE_TMP
 		    /*||(i == QUEUE_POST_DOING)*/
 		    )
 			q->type = 1;
 
-		if ((i == QUEUE_LOCAL_FREE) &&
-		    dimp_get(eDI_MP_use_2_interlace_buff))
+		if (i == QUEUE_LOCAL_FREE &&
+		    dimp_get(edi_mp_use_2_interlace_buff))
 			q->type = 2;
 	}
 	if (local_buffer_num > 0) {
@@ -542,7 +600,7 @@ struct di_buf_s *get_di_buf_head(unsigned int channel, int queue_idx)
 	struct di_buf_pool_s *pbuf_pool = get_buf_pool(channel);
 	enum QUE_TYPE nqtype;/*new que*/
 
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 		dim_print("%s:<%d:%d,%d,%d>\n", __func__, queue_idx,
 			  q->num, q->in_idx, q->out_idx);
 	/* ****new que***** */
@@ -571,7 +629,7 @@ struct di_buf_s *get_di_buf_head(unsigned int channel, int queue_idx)
 	}
 
 	if ((di_buf) && ((((pool_idx + 1) << 8) | di_buf_idx) !=
-			 ((di_buf->type << 8) | (di_buf->index)))) {
+			 ((di_buf->type << 8) | di_buf->index))) {
 		pr_dbg("%s: Error (%x,%x)\n", __func__,
 		       (((pool_idx + 1) << 8) | di_buf_idx),
 		       ((di_buf->type << 8) | (di_buf->index)));
@@ -585,7 +643,7 @@ struct di_buf_s *get_di_buf_head(unsigned int channel, int queue_idx)
 		di_buf = NULL;
 	}
 
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE) {
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE) {
 		if (di_buf)
 			dim_print("%s: 0x%p(%d,%d)\n", __func__, di_buf,
 				  pool_idx, di_buf_idx);
@@ -625,7 +683,7 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 	if (di_buf->queue_index >= 0 && di_buf->queue_index < QUEUE_NUM) {
 		q = &pqueue[di_buf->queue_index];
 
-		if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+		if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 			dim_print("%s:<%d:%d,%d,%d> 0x%p\n", __func__,
 				  di_buf->queue_index, q->num, q->in_idx,
 				  q->out_idx, di_buf);
@@ -633,7 +691,7 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 		if (q->num > 0) {
 			if (q->type == 0) {
 				if (q->pool[q->out_idx] ==
-				    ((di_buf->type << 8) | (di_buf->index))) {
+				    ((di_buf->type << 8) | di_buf->index)) {
 					q->num--;
 					q->pool[q->out_idx] = 0;
 					q->out_idx++;
@@ -641,13 +699,12 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 						q->out_idx = 0;
 					di_buf->queue_index = -1;
 				} else {
-					PR_ERR(
-						"%s: Error (%d, %x,%x)\n",
-						__func__,
-						di_buf->queue_index,
-						q->pool[q->out_idx],
-						((di_buf->type << 8) |
-						(di_buf->index)));
+					PR_ERR("%s: Error (%d, %x,%x)\n",
+					       __func__,
+					       di_buf->queue_index,
+					       q->pool[q->out_idx],
+					       ((di_buf->type << 8) |
+					       (di_buf->index)));
 
 			if (dim_vcry_get_flg() == 0) {
 				dim_vcry_set_log_reason(4);
@@ -680,8 +737,8 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 			} else if (q->type == 2) {
 				int pool_val =
 					(di_buf->type << 8) | (di_buf->index);
-				if ((di_buf->index < MAX_QUEUE_POOL_SIZE) &&
-				    (q->pool[di_buf->index] == pool_val)) {
+				if (di_buf->index < MAX_QUEUE_POOL_SIZE &&
+				    q->pool[di_buf->index] == pool_val) {
 					q->num--;
 					q->pool[di_buf->index] = 0;
 					di_buf->queue_index = -1;
@@ -698,7 +755,7 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 			}
 		}
 	} else {
-		PR_ERR("%s: Error, queue_index %d is not right\n",
+		PR_ERR("%s: queue_index %d is not right\n",
 		       __func__, di_buf->queue_index);
 
 		if (dim_vcry_get_flg() == 0) {
@@ -709,7 +766,7 @@ void queue_out(unsigned int channel, struct di_buf_s *di_buf)
 		dim_vcry_flg_inc();
 	}
 
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 		dim_print("%s done\n", __func__);
 }
 
@@ -740,7 +797,7 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 	if (di_buf->queue_index >= 0 && di_buf->queue_index < QUEUE_NUM) {
 		q = &pqueue[di_buf->queue_index];
 
-		if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+		if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 			dim_print("%s:<%d:%d,%d,%d> 0x%p\n", __func__,
 				  di_buf->queue_index, q->num, q->in_idx,
 				  q->out_idx, di_buf);
@@ -749,7 +806,7 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 			if (q->type == 0) {
 				pr_info("dbg3\n");
 				if (q->pool[q->out_idx] ==
-				    ((di_buf->type << 8) | (di_buf->index))) {
+				    ((di_buf->type << 8) | di_buf->index)) {
 					q->num--;
 					q->pool[q->out_idx] = 0;
 					q->out_idx++;
@@ -757,13 +814,12 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 						q->out_idx = 0;
 					di_buf->queue_index = -1;
 				} else {
-					PR_ERR(
-						"%s: Error (%d, %x,%x)\n",
-						__func__,
-						di_buf->queue_index,
-						q->pool[q->out_idx],
-						((di_buf->type << 8) |
-						(di_buf->index)));
+					PR_ERR("%s: Error (%d, %x,%x)\n",
+					       __func__,
+					       di_buf->queue_index,
+					       q->pool[q->out_idx],
+					       ((di_buf->type << 8) |
+					       (di_buf->index)));
 
 			if (dim_vcry_get_flg() == 0) {
 				dim_vcry_set_log_reason(4);
@@ -800,8 +856,8 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 					(di_buf->type << 8) | (di_buf->index);
 
 				pr_info("dbg4\n");
-				if ((di_buf->index < MAX_QUEUE_POOL_SIZE) &&
-				    (q->pool[di_buf->index] == pool_val)) {
+				if (di_buf->index < MAX_QUEUE_POOL_SIZE &&
+				    q->pool[di_buf->index] == pool_val) {
 					q->num--;
 					q->pool[di_buf->index] = 0;
 					di_buf->queue_index = -1;
@@ -809,9 +865,10 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 					PR_ERR("%s: Error\n", __func__);
 
 					if (dim_vcry_get_flg() == 0) {
-						dim_vcry_set(5,
-							di_buf->queue_index,
-							di_buf);
+						dim_vcry_set
+							(5,
+							 di_buf->queue_index,
+							 di_buf);
 					}
 					dim_vcry_flg_inc();
 				}
@@ -829,7 +886,7 @@ void queue_out_dbg(unsigned int channel, struct di_buf_s *di_buf)
 		dim_vcry_flg_inc();
 	}
 
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 		dim_print("%s done\n", __func__);
 }
 
@@ -871,7 +928,7 @@ void queue_in(unsigned int channel, struct di_buf_s *di_buf, int queue_idx)
 		return;
 	}
 	q = &pqueue[queue_idx];
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 		dim_print("%s:<%d:%d,%d,%d> 0x%p\n", __func__, queue_idx,
 			  q->num, q->in_idx, q->out_idx, di_buf);
 
@@ -896,7 +953,9 @@ void queue_in(unsigned int channel, struct di_buf_s *di_buf, int queue_idx)
 			}
 		}
 		if (i == MAX_QUEUE_POOL_SIZE) {
-			pr_dbg("%s: Error\n", __func__);
+#ifdef PRINT_BASIC
+			PR_ERR("%s: Error\n", __func__);
+#endif
 			if (dim_vcry_get_flg() == 0) {
 				dim_vcry_set_log_reason(9);
 				dim_vcry_set_log_q_idx(queue_idx);
@@ -904,14 +963,14 @@ void queue_in(unsigned int channel, struct di_buf_s *di_buf, int queue_idx)
 			dim_vcry_flg_inc();
 		}
 	} else if (q->type == 2) {
-		if ((di_buf->index < MAX_QUEUE_POOL_SIZE) &&
-		    (q->pool[di_buf->index] == 0)) {
+		if (di_buf->index < MAX_QUEUE_POOL_SIZE &&
+		    q->pool[di_buf->index] == 0) {
 			q->pool[di_buf->index] =
 				(di_buf->type << 8) | (di_buf->index);
 			di_buf->queue_index = queue_idx;
 			q->num++;
 		} else {
-			pr_dbg("%s: Error\n", __func__);
+			PR_ERR("%s: Error\n", __func__);
 			if (dim_vcry_get_flg() == 0) {
 				dim_vcry_set_log_reason(9);
 				dim_vcry_set_log_q_idx(queue_idx);
@@ -920,7 +979,7 @@ void queue_in(unsigned int channel, struct di_buf_s *di_buf, int queue_idx)
 		}
 	}
 
-	if (dimp_get(eDI_MP_di_log_flag) & DI_LOG_QUEUE)
+	if (dimp_get(edi_mp_di_log_flag) & DI_LOG_QUEUE)
 		dim_print("%s done\n", __func__);
 }
 
@@ -974,7 +1033,7 @@ bool is_in_queue(unsigned int channel, struct di_buf_s *di_buf, int queue_idx)
 	/* **************** */
 
 	overflow_cnt = 0;
-	if (!di_buf || (queue_idx < 0) || (queue_idx >= QUEUE_NUM)) {
+	if (!di_buf || queue_idx < 0 || queue_idx >= QUEUE_NUM) {
 		ret = 0;
 		dim_print("%s: not in queue:%d!!!\n", __func__, queue_idx);
 		return ret;

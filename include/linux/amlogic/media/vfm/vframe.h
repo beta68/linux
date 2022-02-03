@@ -32,6 +32,7 @@
 #define VIDTYPE_INTERLACE_FIRST         0x8
 #define VIDTYPE_MVC                     0x10
 #define VIDTYPE_NO_VIDEO_ENABLE         0x20
+#define VIDTYPE_SEC_MD			0x40
 #define VIDTYPE_VIU_NV12                0x80
 #define VIDTYPE_VIU_422                 0x800
 #define VIDTYPE_VIU_FIELD               0x1000
@@ -79,20 +80,34 @@
 #define TB_DETECT_BFF             2
 #define TB_DETECT_TBF             3
 
-#define VFRAME_FLAG_NO_DISCONTINUE		1
-#define VFRAME_FLAG_SWITCHING_FENSE		2
-#define VFRAME_FLAG_HIGH_BANDWIDTH		4
+#define VFRAME_FLAG_NO_DISCONTINUE      1
+#define VFRAME_FLAG_SWITCHING_FENSE     2
+#define VFRAME_FLAG_HIGH_BANDWIDTH	4
 #define VFRAME_FLAG_ERROR_RECOVERY		8
 #define VFRAME_FLAG_SYNCFRAME			0x10
-#define VFRAME_FLAG_GAME_MODE			0x20
-#define VFRAME_FLAG_VIDEO_COMPOSER		0x40
-#define VFRAME_FLAG_VIDEO_COMPOSER_BYPASS	0x80
-#define VFRAME_FLAG_COMPOSER_DONE		0x100
-#define VFRAME_FLAG_VIDEO_COMPOSER_DMA		0x200
-#define VFRAME_FLAG_VIDEO_LINEAR		0x400
-#define VFRAME_FLAG_EMPTY_FRAME_V4L		0x800
-#define VFRAME_FLAG_FAKE_FRAME			0x1000
+#define VFRAME_FLAG_GAME_MODE		0x20
+#define VFRAME_FLAG_VIDEO_COMPOSER     0x40
+#define VFRAME_FLAG_VIDEO_COMPOSER_BYPASS     0x80
+#define VFRAME_FLAG_COMPOSER_DONE	0x100
+#define VFRAME_FLAG_VIDEO_COMPOSER_DMA	0x200
+#define VFRAME_FLAG_VIDEO_LINEAR	0x400
+#define VFRAME_FLAG_EMPTY_FRAME_V4L	0x800
+#define VFRAME_FLAG_FAKE_FRAME		0x1000
+#define VFRAME_FLAG_DOUBLE_FRAM		0x2000
+#define VFRAME_FLAG_VIDEO_DRM			0x4000
+#define VFRAME_FLAG_VIDEO_VDETECT		0x8000
+#define VFRAME_FLAG_VIDEO_VDETECT_PUT		0x10000
+#define VFRAME_FLAG_VIDEO_SECURE		0x20000
+#define VFRAME_FLAG_DI_P_ONLY			0x40000 /* ary */
+#define VFRAME_FLAG_CONTAIN_POST_FRAME	0x80000
+#define VFRAME_FLAG_DI_PW_VFM			0x100000
+#define VFRAME_FLAG_DI_PW_N_LOCAL		0x200000
+#define VFRAME_FLAG_DI_PW_N_EXT			0x400000
+#define VFRAME_FLAG_HF				0x800000 /*HF*/
 
+/* need check folllowing bits when toggle frame, to trigger property change */
+/* add more bits which indicates display attr change in vf->flag */
+#define VFRAME_FLAG_DISP_ATTR_MASK VFRAME_FLAG_VIDEO_LINEAR
 
 enum pixel_aspect_ratio_e {
 	PIXEL_ASPECT_RATIO_1_1,
@@ -283,6 +298,34 @@ enum vframe_disp_mode_e {
 	VFRAME_DISP_MODE_OK,
 };
 
+enum vframe_signal_fmt_e {
+	VFRAME_SIGNAL_FMT_INVALID = -1,
+	VFRAME_SIGNAL_FMT_SDR = 0,
+	VFRAME_SIGNAL_FMT_HDR10 = 1,
+	VFRAME_SIGNAL_FMT_HDR10PLUS = 2,
+	VFRAME_SIGNAL_FMT_HDR10PRIME = 3,
+	VFRAME_SIGNAL_FMT_HLG = 4,
+	VFRAME_SIGNAL_FMT_DOVI = 5,
+	VFRAME_SIGNAL_FMT_DOVI_LL = 6,
+	VFRAME_SIGNAL_FMT_MVC = 7
+};
+
+#define SEI_MAGIC_CODE 0x53656920 /* SEI */
+
+/* signal format and sei data */
+struct vframe_src_fmt_s {
+	enum vframe_signal_fmt_e fmt;
+	u32 sei_magic_code;
+	void *sei_ptr;
+	u32 sei_size;
+	bool dual_layer;
+	char *md_buf;
+	char *comp_buf;
+	int md_size;
+	int comp_size;
+	int parse_ret_flags;
+};
+
 enum pic_mode_provider_e {
 	PIC_MODE_PROVIDER_DB = 0,
 	PIC_MODE_PROVIDER_WSS,
@@ -332,6 +375,65 @@ struct codec_mm_box_s {
 	int     bmmu_idx;
 };
 
+struct vsif_info {
+	void *addr;
+	unsigned int size;
+};
+
+struct emp_info {
+	void *addr;
+	unsigned int size;
+};
+
+#define MAX_COMPOSER_COUNT 9
+#define AXIS_INFO_COUNT    4
+
+struct componser_info_t {
+	int count;
+	int axis[MAX_COMPOSER_COUNT][AXIS_INFO_COUNT];
+};
+
+struct nn_value_t {
+	int maxclass;
+	int maxprob;
+};
+
+#define AI_PQ_TOP 5
+
+struct dcntr_mem_s {
+	u32 index;
+	u32 grd_addr;
+	u32 yds_addr;
+	u32 cds_addr;
+	u32 grd_size;
+	u32 yds_size;
+	u32 cds_size;
+	u32 ds_ratio;
+	u32 pre_out_fmt;//VIDTYPE_VIU_NV12, VIDTYPE_VIU_444
+	u32 yflt_wrmif_length;
+	u32 cflt_wrmif_length;
+	bool free;
+	bool use_org;
+	bool grd_swap_64bit;
+	bool yds_swap_64bit;
+	bool cds_swap_64bit;
+	bool grd_little_endian;
+	bool yds_little_endian;
+	bool cds_little_endian;
+	bool yds_canvas_mode;//0:linear address mode  1:canvas mode
+	bool cds_canvas_mode;
+};
+
+struct hf_info_t {
+	bool revert_mode;
+	u32 index;
+	ulong phy_addr;
+	u32 width;
+	u32 height;
+	u32 buffer_w;
+	u32 buffer_h;
+};
+
 struct vframe_s {
 	u32 index;
 	u32 index_disp;
@@ -367,29 +469,27 @@ struct vframe_s {
 	u32 compHeight;
 	u32 ratio_control;
 	u32 bitdepth;
+	/*
+	 * bit 31: is_cuva
+	 * bit 30: is_dv
+	 * bit 29: present_flag
+	 * bit 28-26: video_format
+	 *	"component", "PAL", "NTSC", "SECAM", "MAC", "unspecified"
+	 * bit 25: range "limited", "full_range"
+	 * bit 24: color_description_present_flag
+	 * bit 23-16: color_primaries
+	 *	"unknown", "bt709", "undef", "bt601", "bt470m", "bt470bg",
+	 *	"smpte170m", "smpte240m", "film", "bt2020"
+	 * bit 15-8: transfer_characteristic
+	 *	"unknown", "bt709", "undef", "bt601", "bt470m", "bt470bg",
+	 *	"smpte170m", "smpte240m", "linear", "log100", "log316",
+	 *	"iec61966-2-4", "bt1361e", "iec61966-2-1", "bt2020-10",
+	 *	"bt2020-12", "smpte-st-2084", "smpte-st-428"
+	 * bit 7-0: matrix_coefficient
+	 *	"GBR", "bt709", "undef", "bt601", "fcc", "bt470bg",
+	 *	"smpte170m", "smpte240m", "YCgCo", "bt2020nc", "bt2020c"
+	 */
 	u32 signal_type;
-/*
- *	   bit 29: present_flag
- *	   bit 28-26: video_format
- *	   "component", "PAL", "NTSC", "SECAM",
- *	   "MAC", "unspecified"
- *	   bit 25: range "limited", "full_range"
- *	   bit 24: color_description_present_flag
- *	   bit 23-16: color_primaries
- *	   "unknown", "bt709", "undef", "bt601",
- *	   "bt470m", "bt470bg", "smpte170m", "smpte240m",
- *	   "film", "bt2020"
- *	   bit 15-8: transfer_characteristic
- *	   "unknown", "bt709", "undef", "bt601",
- *	   "bt470m", "bt470bg", "smpte170m", "smpte240m",
- *	   "linear", "log100", "log316", "iec61966-2-4",
- *	   "bt1361e", "iec61966-2-1", "bt2020-10", "bt2020-12",
- *	   "smpte-st-2084", "smpte-st-428"
- *	   bit 7-0: matrix_coefficient
- *	   "GBR", "bt709", "undef", "bt601",
- *	   "fcc", "bt470bg", "smpte170m", "smpte240m",
- *	   "YCgCo", "bt2020nc", "bt2020c"
- */
 	u32 orientation;
 	u32 video_angle;
 	enum vframe_source_type_e source_type;
@@ -408,6 +508,7 @@ struct vframe_s {
 		unsigned int zoom_end_x_lines,
 		unsigned int zoom_start_y_lines,
 		unsigned int zoom_end_y_lines, struct vframe_s *vf);
+	struct hf_info_t *hf_info;	/* hg data*/
 	void *private_data;
 #if 1
 	/* vframe properties */
@@ -435,8 +536,6 @@ struct vframe_s {
 	 * used by memory owner.
 	 */
 	void *mem_handle;
-	/* in secure·memory */
-	int mem_sec;
 	/*for MMU H265/VP9 compress header*/
 	void *mem_head_handle;
 	struct vframe_pic_mode_s pic_mode;
@@ -445,6 +544,7 @@ struct vframe_s {
 
 	u32 sar_width;
 	u32 sar_height;
+
 	/*****************
 	 * di pulldown info
 	 * bit 3: interlace
@@ -454,8 +554,54 @@ struct vframe_s {
 	 *****************/
 	u32 di_pulldown;
 	u32 di_gmv;
+	u32 di_cm_cnt;
+	u32 axis[4];
+	u32 crop[4];
+	u32 zorder;
+	u32 repeat_count[2];
+	struct file *file_vf;
+	bool rendered;
 
 	struct codec_mm_box_s mm_box;
+	struct vsif_info vsif;
+	struct emp_info emp;
+
+	/* signal format and sei data */
+	struct vframe_src_fmt_s src_fmt;
+	/*for di process NR and cts, storage dec vf*/
+	void *vf_ext;
+
+	u32 dwHeadAddr;
+	u32 dwBodyAddr;
+	bool fgs_valid;
+	u32 fgs_table_adr;
+
+	u32 di_instance_id;
+
+	int sidebind_type;
+	int sidebind_channel_id;
+
+	/*for double write VP9/AV1 vf*/
+	void *mem_dw_handle;
+	struct nn_value_t nn_value[AI_PQ_TOP];
+	struct fence *fence;
+		/*current is dv input*/
+	bool dv_input;
+	/* dv mode crc check:
+	 * true: crc check ok
+	 * false: crc check fail
+	 */
+	bool dv_crc_sts;
+
+	/* currently only for keystone use */
+	unsigned int crc;
+	struct componser_info_t *componser_info;
+	void *decontour_pre;
+
+	u32 hdr10p_data_size;
+	char *hdr10p_data_buf;
+
+	bool discard_dv_data;
 } /*vframe_t */;
 
 #if 0
@@ -466,4 +612,15 @@ int get_curren_frame_para(int *top, int *left, int *bottom, int *right);
 u8 is_vpp_postblend(void);
 
 void pause_video(unsigned char pause_flag);
+
+s32 update_vframe_src_fmt(
+	struct vframe_s *vf, void *sei,
+	u32 size, bool dual_layer,
+	char *prov_name, char *recv_name);
+
+void *get_sei_from_src_fmt(struct vframe_s *vf, u32 *sei_size);
+enum vframe_signal_fmt_e get_vframe_src_fmt(struct vframe_s *vf);
+s32 clear_vframe_src_fmt(struct vframe_s *vf);
+int get_md_from_src_fmt(struct vframe_s *vf);
+
 #endif /* VFRAME_H */

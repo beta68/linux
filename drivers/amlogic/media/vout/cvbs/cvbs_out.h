@@ -25,7 +25,9 @@
 #include <linux/amlogic/media/vout/vout_notify.h>
 #include "cvbs_mode.h"
 
-#define CVBSOUT_VER "Ref.2018/11/07"
+/* 20200619: add sc2 support */
+/* 20210916: add txlx/tl1 support */
+#define CVBSOUT_VER "Ref.2021/09/16"
 
 #define CVBS_CLASS_NAME	"cvbs"
 #define CVBS_NAME	"cvbs"
@@ -51,12 +53,24 @@ enum cvbs_cpu_type {
 	CVBS_CPU_TYPE_TL1    = 5,
 	CVBS_CPU_TYPE_SM1    = 6,
 	CVBS_CPU_TYPE_TM2    = 7,
+	CVBS_CPU_TYPE_SC2    = 8,
+	CVBS_CPU_TYPE_T5     = 9,
+	CVBS_CPU_TYPE_T5D    = 10,
 };
 
 struct meson_cvbsout_data {
-	unsigned int cntl0_val;
 	enum cvbs_cpu_type cpu_id;
 	const char *name;
+
+	unsigned int vdac_vref_adj;
+	unsigned int vdac_gsw;
+
+	unsigned int reg_vid_pll_clk_div;
+	unsigned int reg_vid_clk_div;
+	unsigned int reg_vid_clk_ctrl;
+	unsigned int reg_vid2_clk_div;
+	unsigned int reg_vid2_clk_ctrl;
+	unsigned int reg_vid_clk_ctrl2;
 };
 
 #define CVBS_PERFORMANCE_CNT_MAX    20
@@ -64,6 +78,10 @@ struct performance_config_s {
 	unsigned int reg_cnt;
 	struct reg_s *reg_table;
 };
+
+/* cvbs driver flag */
+#define CVBS_FLAG_EN_ENCI   BIT(0)
+#define CVBS_FLAG_EN_VDAC   BIT(1)
 
 struct cvbs_drv_s {
 	struct vinfo_s *vinfo;
@@ -74,8 +92,8 @@ struct cvbs_drv_s {
 	struct meson_cvbsout_data *cvbs_data;
 	struct performance_config_s perf_conf_pal;
 	struct performance_config_s perf_conf_ntsc;
-	struct delayed_work dv_dwork;
-	bool dwork_flag;
+	struct delayed_work vdac_dwork;
+	unsigned int flag;
 
 	/* clktree */
 	unsigned int clk_gate_state;
@@ -99,5 +117,8 @@ struct cvbsregs_set_t {
 };
 
 extern void amvecm_clip_range_limit(bool limit_en);
+
+int cvbs_cpu_type(void);
+struct meson_cvbsout_data *get_cvbs_data(void);
 
 #endif

@@ -34,7 +34,6 @@
 #include <linux/amlogic/media/vout/hdmi_tx/hdmi_tx_compliance.h>
 #include "hw/common.h"
 
-unsigned char hdmi_output_rgb = 0;
 static void hdmitx_set_spd_info(struct hdmitx_dev *hdmitx_device);
 static void hdmi_set_vend_spec_infofram(struct hdmitx_dev *hdev,
 	enum hdmi_vic VideoCode);
@@ -284,6 +283,17 @@ static struct hdmitx_vidpara hdmi_tx_video_params[] = {
 	},
 	{
 		.VIC		= HDMI_1080p30,
+		.color_prefer   = COLORSPACE_RGB444,
+		.color_depth	= COLORDEPTH_24B,
+		.bar_info	= B_BAR_VERT_HORIZ,
+		.repeat_time	= NO_REPEAT,
+		.aspect_ratio   = TV_ASPECT_RATIO_16_9,
+		.cc		= CC_ITU709,
+		.ss		= SS_SCAN_UNDER,
+		.sc		= SC_SCALE_HORIZ_VERT,
+	},
+	{
+		.VIC		= HDMI_1080p120,
 		.color_prefer   = COLORSPACE_RGB444,
 		.color_depth	= COLORDEPTH_24B,
 		.bar_info	= B_BAR_VERT_HORIZ,
@@ -649,12 +659,12 @@ static struct hdmitx_vidpara hdmi_tx_video_params[] = {
 		.VIC		= HDMIV_1280x1024p60hz,
 		.color_prefer	= COLORSPACE_RGB444,
 		.color_depth	= COLORDEPTH_24B,
-		.bar_info	= B_BAR_VERT_HORIZ,
+		.bar_info	= B_UNVALID,
 		.repeat_time	= NO_REPEAT,
-		.aspect_ratio	= TV_ASPECT_RATIO_4_3,
-		.cc			= CC_ITU709,
-		.ss			= SS_SCAN_UNDER,
-		.sc			= SC_SCALE_HORIZ_VERT,
+		.aspect_ratio	= ASPECT_RATIO_SAME_AS_SOURCE,
+		.cc			= CC_NO_DATA,
+		.ss			= SS_NO_DATA,
+		.sc			= SC_NO_UINFORM,
 	},
 	{
 		.VIC		= HDMIV_1360x768p60hz,
@@ -737,12 +747,12 @@ static struct hdmitx_vidpara hdmi_tx_video_params[] = {
 		.VIC		= HDMIV_1680x1050p60hz,
 		.color_prefer	= COLORSPACE_RGB444,
 		.color_depth	= COLORDEPTH_24B,
-		.bar_info	= B_BAR_VERT_HORIZ,
+		.bar_info	= B_UNVALID,
 		.repeat_time	= NO_REPEAT,
-		.aspect_ratio	= TV_ASPECT_RATIO_16_9,
-		.cc			= CC_ITU709,
-		.ss			= SS_SCAN_UNDER,
-		.sc			= SC_SCALE_HORIZ_VERT,
+		.aspect_ratio	= ASPECT_RATIO_SAME_AS_SOURCE,
+		.cc			= CC_NO_DATA,
+		.ss			= SS_NO_DATA,
+		.sc			= SC_NO_UINFORM,
 	},
 	{
 		.VIC		= HDMIV_1920x1200p60hz,
@@ -751,6 +761,17 @@ static struct hdmitx_vidpara hdmi_tx_video_params[] = {
 		.bar_info	= B_BAR_VERT_HORIZ,
 		.repeat_time	= NO_REPEAT,
 		.aspect_ratio	= TV_ASPECT_RATIO_16_9,
+		.cc			= CC_ITU709,
+		.ss			= SS_SCAN_UNDER,
+		.sc			= SC_SCALE_HORIZ_VERT,
+	},
+	{
+		.VIC		= HDMIV_2048x1080p24hz,
+		.color_prefer	= COLORSPACE_RGB444,
+		.color_depth	= COLORDEPTH_24B,
+		.bar_info	= B_BAR_VERT_HORIZ,
+		.repeat_time	= NO_REPEAT,
+		.aspect_ratio	= ASPECT_RATIO_SAME_AS_SOURCE,
 		.cc			= CC_ITU709,
 		.ss			= SS_SCAN_UNDER,
 		.sc			= SC_SCALE_HORIZ_VERT,
@@ -810,63 +831,28 @@ static struct hdmitx_vidpara hdmi_tx_video_params[] = {
 		.ss			= SS_SCAN_UNDER,
 		.sc			= SC_SCALE_HORIZ_VERT,
 	},
-#if defined(CONFIG_ARCH_MESON64_ODROID_COMMON)
-	{
-		.VIC            = HDMI_480x320p60_4x3,
-		.color_prefer   = COLORSPACE_RGB444,
-		.color_depth    = COLORDEPTH_24B,
-		.bar_info       = B_BAR_VERT_HORIZ,
-		.repeat_time    = NO_REPEAT,
-		.aspect_ratio   = ASPECT_RATIO_SAME_AS_SOURCE,
-		.cc             = CC_ITU709,
-		.ss             = SS_SCAN_UNDER,
-		.sc             = SC_SCALE_HORIZ_VERT,
-	},
-	{
-		.VIC		= HDMI_480x272p60_4x3,
-		.color_prefer   = COLORSPACE_RGB444,
-		.color_depth	= COLORDEPTH_24B,
-		.bar_info	= B_BAR_VERT_HORIZ,
-		.repeat_time	= NO_REPEAT,
-		.aspect_ratio   = ASPECT_RATIO_SAME_AS_SOURCE,
-		.cc		= CC_ITU709,
-		.ss		= SS_SCAN_UNDER,
-		.sc		= SC_SCALE_HORIZ_VERT,
-	},
-	{
-		.VIC            = HDMI_480x800p60_4x3,
-		.color_prefer   = COLORSPACE_RGB444,
-		.color_depth    = COLORDEPTH_24B,
-		.bar_info       = B_BAR_VERT_HORIZ,
-		.repeat_time    = NO_REPEAT,
-		.aspect_ratio   = ASPECT_RATIO_SAME_AS_SOURCE,
-		.cc             = CC_ITU709,
-		.ss             = SS_SCAN_UNDER,
-		.sc             = SC_SCALE_HORIZ_VERT,
-	},
 	{
 		.VIC		= HDMIV_3440x1440p60hz,
-		.color_prefer   = COLORSPACE_RGB444,
-		.color_depth    = COLORDEPTH_24B,
-		.bar_info	= B_BAR_VERT_HORIZ,
+		.color_prefer	= COLORSPACE_RGB444,
+		.color_depth	= COLORDEPTH_24B,
+		.bar_info	= B_UNVALID,
 		.repeat_time	= NO_REPEAT,
-		.aspect_ratio   = ASPECT_RATIO_SAME_AS_SOURCE,
-		.cc		= CC_ITU709,
-		.ss		= SS_SCAN_UNDER,
-		.sc		= SC_SCALE_HORIZ_VERT,
+		.aspect_ratio	= ASPECT_RATIO_SAME_AS_SOURCE,
+		.cc = CC_NO_DATA,
+		.ss = SS_NO_DATA,
+		.sc = SC_NO_UINFORM,
 	},
 	{
-		.VIC		= HDMI_CUSTOMBUILT,
-		.color_prefer   = COLORSPACE_RGB444,
+		.VIC		= HDMIV_2400x1200p90hz,
+		.color_prefer	= COLORSPACE_RGB444,
 		.color_depth	= COLORDEPTH_24B,
-		.bar_info	= B_BAR_VERT_HORIZ,
+		.bar_info	= B_UNVALID,
 		.repeat_time	= NO_REPEAT,
-		.aspect_ratio   = ASPECT_RATIO_SAME_AS_SOURCE,
-		.cc		= CC_ITU709,
-		.ss		= SS_SCAN_UNDER,
-		.sc		= SC_SCALE_HORIZ_VERT,
+		.aspect_ratio	= ASPECT_RATIO_SAME_AS_SOURCE,
+		.cc = CC_NO_DATA,
+		.ss = SS_NO_DATA,
+		.sc = SC_NO_UINFORM,
 	},
-#endif
 };
 
 static struct hdmitx_vidpara *hdmi_get_video_param(
@@ -940,11 +926,6 @@ static int is_dvi_device(struct rx_cap *prxcap)
 		return 0;
 }
 
-void hdmitx_output_rgb(void)
-{
-	hdmi_output_rgb = 1;
-}
-
 int hdmitx_set_display(struct hdmitx_dev *hdev, enum hdmi_vic VideoCode)
 {
 	struct hdmitx_vidpara *param = NULL;
@@ -958,37 +939,36 @@ int hdmitx_set_display(struct hdmitx_dev *hdev, enum hdmi_vic VideoCode)
 	AVI_HB[2] = AVI_INFOFRAMES_LENGTH;
 	for (i = 0; i < 32; i++)
 		AVI_DB[i] = 0;
-
 	vic = hdev->hwop.getstate(hdev, STAT_VIDEO_VIC, 0);
+	if (hdev->vend_id_hit)
+		pr_info(VID "special tv detected\n");
 	pr_info(VID "already init VIC = %d  Now VIC = %d\n",
 		vic, VideoCode);
 	if ((vic != HDMI_Unknown) && (vic == VideoCode))
 		hdev->cur_VIC = vic;
 
 	param = hdmi_get_video_param(VideoCode);
+	if (hdev->cur_video_param != NULL)
+		param->color_depth = hdev->cur_video_param->color_depth;
 	hdev->cur_video_param = param;
 	if (param) {
 		param->color = param->color_prefer;
-		if (hdmi_output_rgb) {
+		/* HDMI CT 7-24 Pixel Encoding
+		 * YCbCr to YCbCr Sink
+		 */
+		switch (hdev->rxcap.native_Mode & 0x30) {
+		case 0x20:/*bit5==1, then support YCBCR444 + RGB*/
+			param->color = COLORSPACE_YUV444;
+			break;
+		case 0x10:/*bit4==1, then support YCBCR422 + RGB*/
+			param->color = COLORSPACE_YUV422;
+			break;
+		case 0x30:
+			param->color = hdev->para->cs;
+			break;
+		default:
 			param->color = COLORSPACE_RGB444;
-		} else {
-			/* HDMI CT 7-24 Pixel Encoding
-			 * YCbCr to YCbCr Sink
-			 */
-			switch (hdev->rxcap.native_Mode & 0x30) {
-			case 0x20:/*bit5==1, then support YCBCR444 + RGB*/
-			case 0x30:
-				param->color = COLORSPACE_YUV444;
-				break;
-			case 0x10:/*bit4==1, then support YCBCR422 + RGB*/
-				param->color = COLORSPACE_YUV422;
-				break;
-			default:
-				param->color = COLORSPACE_RGB444;
-			}
 		}
-		pr_info("[%s] output_rgb %d, cs %d\n", __func__,
-				hdmi_output_rgb, param->color);
 		/* For Y420 modes */
 		switch (VideoCode) {
 		case HDMI_3840x2160p50_16x9_Y420:
@@ -1018,27 +998,14 @@ int hdmitx_set_display(struct hdmitx_dev *hdev, enum hdmi_vic VideoCode)
 			 * TMDS_MODE[hdmi_config]
 			 * 0: DVI Mode	   1: HDMI Mode
 			 */
-#if defined(CONFIG_ARCH_MESON64_ODROID_COMMON)
-			if (odroid_voutmode() == VOUTMODE_HDMI) {
-				pr_info(VID "Sink is HDMI device\n");
-				hdev->hwop.cntlconfig(hdev,
-					CONF_HDMI_DVI_MODE, HDMI_MODE);
-			} else if (odroid_voutmode() == VOUTMODE_DVI) {
+			if (is_dvi_device(&hdev->rxcap)) {
 				pr_info(VID "Sink is DVI device\n");
 				hdev->hwop.cntlconfig(hdev,
 					CONF_HDMI_DVI_MODE, DVI_MODE);
-			} else
-#endif
-			{
-				if (is_dvi_device(&hdev->rxcap)) {
-					pr_info(VID "Sink is DVI device\n");
-					hdev->hwop.cntlconfig(hdev,
-						CONF_HDMI_DVI_MODE, DVI_MODE);
-				} else {
-					pr_info(VID "Sink is HDMI device\n");
-					hdev->hwop.cntlconfig(hdev,
-						CONF_HDMI_DVI_MODE, HDMI_MODE);
-				}
+			} else {
+				pr_info(VID "Sink is HDMI device\n");
+				hdev->hwop.cntlconfig(hdev,
+					CONF_HDMI_DVI_MODE, HDMI_MODE);
 			}
 			hdmi_tx_construct_avi_packet(param, (char *)AVI_DB);
 
@@ -1053,27 +1020,13 @@ int hdmitx_set_display(struct hdmitx_dev *hdev, enum hdmi_vic VideoCode)
 			else
 				;
 
-			switch (hdev->rxcap.allm ? hdev->allm_mode : 0) {
-			case 1: /* game */
+			if (hdev->allm_mode) {
 				hdmitx_construct_vsif(hdev, VT_ALLM, 1, NULL);
-				hdev->hwop.cntlconfig(hdev, CONF_ALLM_MODE,
-					SET_ALLM_GAME);
-				break;
-			case 2: /* graphics */
-				hdev->hwop.cntlconfig(hdev, CONF_ALLM_MODE,
-					SET_ALLM_GRAPHICS);
-				break;
-			case 3: /* photo */
-				hdev->hwop.cntlconfig(hdev, CONF_ALLM_MODE,
-					SET_ALLM_PHOTO);
-				break;
-			case 4: /* cinema */
-				hdev->hwop.cntlconfig(hdev, CONF_ALLM_MODE,
-					SET_ALLM_CINEMA);
-				break;
-			default:
-				break;
+				hdev->hwop.cntlconfig(hdev, CONF_CT_MODE,
+					SET_CT_OFF);
 			}
+			hdev->hwop.cntlconfig(hdev, CONF_CT_MODE,
+				hdev->ct_mode);
 
 			ret = 0;
 		}

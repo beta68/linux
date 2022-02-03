@@ -37,6 +37,24 @@
 #define HF_IEEEOUI		0xC45DD8
 #define DOVI_IEEEOUI		0x00D046
 #define HDR10PLUS_IEEEOUI	0x90848B
+#define CUVA_IEEEOUI		0x047503
+
+enum hdmi_tf_type {
+	HDMI_NONE = 0,
+	/* HDMI_HDR_TYPE, HDMI_DV_TYPE, and HDMI_HDR10P_TYPE
+	 * should be mutexed with each other
+	 */
+	HDMI_HDR_TYPE = 0x10,
+	HDMI_HDR_SMPTE_2084	= HDMI_HDR_TYPE | 1,
+	HDMI_HDR_HLG		= HDMI_HDR_TYPE | 2,
+	HDMI_HDR_HDR		= HDMI_HDR_TYPE | 3,
+	HDMI_HDR_SDR		= HDMI_HDR_TYPE | 4,
+	HDMI_DV_TYPE = 0x20,
+	HDMI_DV_VSIF_STD	= HDMI_DV_TYPE | 1,
+	HDMI_DV_VSIF_LL		= HDMI_DV_TYPE | 2,
+	HDMI_HDR10P_TYPE = 0x30,
+	HDMI_HDR10P_DV_VSIF	= HDMI_HDR10P_TYPE | 1,
+};
 
 #define GET_OUI_BYTE0(oui)	(oui & 0xff) /* Little Endian */
 #define GET_OUI_BYTE1(oui)	((oui >> 8) & 0xff)
@@ -158,12 +176,6 @@ enum hdmi_vic {
 	HDMI_3840x1080p100hz,
 	HDMI_3840x540p240hz,
 	HDMI_3840x540p200hz,
-#if defined(CONFIG_ARCH_MESON64_ODROID_COMMON)
-	HDMI_480x320p60_4x3,
-	HDMI_480x272p60_4x3,
-	HDMI_480x800p60_4x3,
-	HDMI_CUSTOMBUILT,
-#endif
 
 	/*
 	 * the following vic is for those y420 mode
@@ -209,11 +221,13 @@ enum hdmi_vic {
 	HDMIV_1600x1200p60hz,
 	HDMIV_1680x1050p60hz,
 	HDMIV_1920x1200p60hz,
+	HDMIV_2048x1080p24hz,
 	HDMIV_2160x1200p90hz,
 	HDMIV_2560x1080p60hz,
 	HDMIV_2560x1440p60hz,
 	HDMIV_2560x1600p60hz,
 	HDMIV_3440x1440p60hz,
+	HDMIV_2400x1200p90hz,
 	HDMI_VIC_END,
 };
 
@@ -240,6 +254,7 @@ enum hdmi_vic {
 #define HDMI_1080p24            HDMI_1920x1080p24_16x9
 #define HDMI_1080p25            HDMI_1920x1080p25_16x9
 #define HDMI_1080p30            HDMI_1920x1080p30_16x9
+#define HDMI_1080p120           HDMI_1920x1080p120_16x9
 #define HDMI_480p60_16x9_rpt    HDMI_2880x480p60_16x9
 #define HDMI_576p50_16x9_rpt    HDMI_2880x576p50_16x9
 #define HDMI_4k2k_24            HDMI_3840x2160p24_16x9
@@ -410,6 +425,7 @@ unsigned int hdmi_get_csc_coef(
 	unsigned int input_format, unsigned int output_format,
 	unsigned int color_depth, unsigned int color_format,
 	unsigned char **coef_array, unsigned int *coef_length);
+int hdmi_get_fmt_names(char *names);
 struct hdmi_format_para *hdmi_get_fmt_name(char const *name, char const *attr);
 struct hdmi_format_para *hdmi_tst_fmt_name(char const *name, char const *attr);
 struct vinfo_s *hdmi_get_valid_vinfo(char *mode);
@@ -628,8 +644,8 @@ struct dtd {
 	unsigned short h_sync;
 	unsigned short v_sync_offset;
 	unsigned short v_sync;
-	unsigned char h_image_size;
-	unsigned char v_image_size;
+	unsigned short h_image_size;
+	unsigned short v_image_size;
 	unsigned char h_border;
 	unsigned char v_border;
 	unsigned char flags;
@@ -641,7 +657,7 @@ struct vesa_standard_timing {
 	unsigned short vactive;
 	unsigned short hblank;
 	unsigned short vblank;
-	unsigned short hsync;
+	unsigned short vsync;
 	unsigned short tmds_clk; /* Value = Pixel clock ?? 10,000 */
 	enum hdmi_vic vesa_timing;
 };

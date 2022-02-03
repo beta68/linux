@@ -38,9 +38,13 @@
 #define RRINT_FLAG_RPM                0x0400
 #define DEBUG_DISABLE_RUNREADY_RMBUF  0x0800
 #define PRINT_FLAG_DUMP_BUFSPEC       0x1000
+#define PRINT_FLAG_FCC_STATUS         0x2000
+#define PRINT_FLAG_SEI_DETAIL         0x4000
 #define PRINT_FLAG_V4L_DETAIL         0x8000
 #define DISABLE_ERROR_HANDLE          0x10000
 #define DEBUG_DUMP_STAT               0x80000
+#define DEBUG_TIMEOUT_DEC_STAT        0x800000
+
 /*setting canvas mode and endian.
   if this flag is set, value of canvas mode
   will according to the value of mem_map_mode.
@@ -375,6 +379,12 @@ union param {
 		unsigned short colocated_mv_addr_start[2];
 		unsigned short colocated_mv_addr_end[2];
 		unsigned short colocated_mv_wr_addr[2];
+
+		unsigned short frame_crop_left_offset;
+		unsigned short frame_crop_right_offset;
+		unsigned short frame_crop_top_offset;
+		unsigned short frame_crop_bottom_offset;
+		unsigned short chroma_format_idc;
 	} dpb;
 	struct {
 		unsigned short dump[MMCO_OFFSET];
@@ -472,6 +482,7 @@ enum FirstInsertFrm_State {
 
 struct SPSParameters {
 	unsigned int profile_idc;
+	unsigned int level_idc;
 	int pic_order_cnt_type;
 	int log2_max_pic_order_cnt_lsb_minus4;
 	int num_ref_frames_in_pic_order_cnt_cycle;
@@ -483,8 +494,8 @@ struct SPSParameters {
 	int frame_mbs_only_flag;
 	int num_ref_frames;
 	int max_dpb_size;
-
 	int log2_max_frame_num_minus4;
+	int frame_num_gap_allowed;
 };
 
 #define DEC_REF_PIC_MARKING_BUFFER_NUM_MAX   45
@@ -731,6 +742,7 @@ struct StorablePicture {
 	int max_mv;
 	int min_mv;
 	int avg_mv;
+	u32 pic_size;
 };
 
 struct FrameStore {
@@ -808,8 +820,13 @@ struct FrameStore {
 	int max_mv;
 	int min_mv;
 	int avg_mv;
+	int dpb_frame_count;
+	u32 hw_decode_time;
+	u32 frame_size2; // For recording the chunk->size in frame mode
+	bool show_frame;
+	struct fence *fence;
+	u32 decoded_frame_size;
 };
-
 
 /* #define DPB_SIZE_MAX     16 */
 #define DPB_SIZE_MAX     32
@@ -859,6 +876,7 @@ struct h264_dpb_stru {
 	int buf_num;
 	int curr_POC;
 	int reorder_pic_num;
+	unsigned int dec_dpb_size;
 	u8 fast_output_enable;
 		/*poc_even_flag:
 		 0, init; 1, odd; 2, even*/
@@ -893,13 +911,21 @@ struct h264_dpb_stru {
 	u16 num_reorder_frames;
 	u16 max_dec_frame_buffering;
 
+	unsigned int frame_crop_left_offset;
+	unsigned int frame_crop_right_offset;
+	unsigned int frame_crop_top_offset;
+	unsigned int frame_crop_bottom_offset;
+	unsigned int chroma_format_idc;
+
 	unsigned int dec_dpb_status;
 	unsigned int last_dpb_status;
 	unsigned char buf_alloc_fail;
 	unsigned int dpb_error_flag;
-	unsigned int origin_max_reference;
+	unsigned int reorder_output;
 	unsigned int first_insert_frame;
 	int first_output_poc;
+	int dpb_frame_count;
+	u32 without_display_mode;
 };
 
 
@@ -920,7 +946,7 @@ void set_frame_output_flag(struct h264_dpb_stru *p_H264_Dpb, int index);
 
 int is_there_unused_frame_from_dpb(struct DecodedPictureBuffer *p_Dpb);
 
-int h264_slice_header_process(struct h264_dpb_stru *p_H264_Dpb);
+int h264_slice_header_process(struct h264_dpb_stru *p_H264_Dpb, int *frame_num_gap);
 
 void dpb_init_global(struct h264_dpb_stru *p_H264_Dpb,
 	int id, int actual_dpb_size, int max_reference_size);
@@ -958,9 +984,21 @@ void dump_dpb(struct DecodedPictureBuffer *p_Dpb, u8 force);
 
 void dump_pic(struct h264_dpb_stru *p_H264_Dpb);
 
+void * vh264_get_bufspec_lock(struct vdec_s *vdec);
+
 enum PictureStructure get_cur_slice_picture_struct(
 	struct h264_dpb_stru *p_H264_Dpb);
 
 int dpb_check_ref_list_error(
 	struct h264_dpb_stru *p_H264_Dpb);
+
+void unmark_for_reference(struct DecodedPictureBuffer *p_Dpb,
+	struct FrameStore *fs);
+
+void update_ref_list(struct DecodedPictureBuffer *p_Dpb);
+
+int post_picture_early(struct vdec_s *vdec, int index);
+
+int is_used_for_reference(struct FrameStore *fs);
+
 #endif

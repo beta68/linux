@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
  * drivers/amlogic/media/di_multi/di_vframe.c
  *
@@ -24,16 +25,19 @@
 #include "di_pre.h"
 #include "di_prc.h"
 #include "di_dbg.h"
+#include "di_que.h"
 
 #include "di_vframe.h"
+#include "di_task.h"
+#include "di_sys.h"
 
 struct dev_vfram_t *get_dev_vframe(unsigned int ch)
 {
 	if (ch < DI_CHANNEL_NUB)
-		return &get_datal()->ch_data[ch].vfm;
+		return &get_datal()->ch_data[ch].itf.dvfm;
 
 	pr_info("err:%s ch overflow %d\n", __func__, ch);
-	return &get_datal()->ch_data[0].vfm;
+	return &get_datal()->ch_data[0].itf.dvfm;
 }
 
 const char * const di_rev_name[4] = {
@@ -43,42 +47,730 @@ const char * const di_rev_name[4] = {
 	"dimulti.3",
 };
 
-void dev_vframe_reg(struct dev_vfram_t *pvfm)
+/**************************************
+ * nins_m_recycle
+ *	op_back_input
+ *	_RECYCL -> _IDLE
+ *	back vfm to dec
+ *	run in main
+ **************************************/
+static void nins_m_recycle(struct di_ch_s *pch)
 {
-	if (pvfm->reg) {
-		PR_WARN("duplicate reg\n");
+	struct buf_que_s *pbufq;
+	int i;
+	unsigned int cnt, ch;
+	struct dim_nins_s *ins;
+	struct vframe_s *vfm;
+
+	if ((!pch) || (pch->itf.etype != EDIM_NIN_TYPE_VFM)) {
+		PR_ERR("%s:\n", __func__);
 		return;
 	}
-	vf_reg_provider(&pvfm->di_vf_prov);
-	vf_notify_receiver(pvfm->name, VFRAME_EVENT_PROVIDER_START, NULL);
-	pvfm->reg = 1;
-}
+	ch = pch->ch_id;
+	pbufq = &pch->nin_qb;
 
-void dev_vframe_unreg(struct dev_vfram_t *pvfm)
-{
-	if (pvfm->reg) {
-		vf_unreg_provider(&pvfm->di_vf_prov);
-		pvfm->reg = 0;
-	} else {
-		PR_WARN("duplicate ureg\n");
+	cnt = qbufp_count(pbufq, QBF_NINS_Q_RECYCL);
+
+	if (!cnt)
+		return;
+
+	for (i = 0; i < cnt; i++) {
+		ins = nins_move(pch, QBF_NINS_Q_RECYCL, QBF_NINS_Q_IDLE);
+		vfm = (struct vframe_s *)ins->c.ori;
+		if (vfm) {
+			pw_vf_put(vfm, ch);
+			pw_vf_notify_provider(ch,
+					      VFRAME_EVENT_RECEIVER_PUT, NULL);
+		}
+		memset(&ins->c, 0, sizeof(ins->c));
 	}
 }
 
-void di_vframe_reg(unsigned int ch)
+static void nins_m_unreg(struct di_ch_s *pch)
 {
-	struct dev_vfram_t *pvfm;
-
-	pvfm = get_dev_vframe(ch);
-
-	dev_vframe_reg(pvfm);
+	//clear all input
+	bufq_nin_reg(pch);
 }
 
-void di_vframe_unreg(unsigned int ch)
+/************************************************
+ * for clear q,
+ * from used to idle,
+ * not back to dec
+ * ??
+ ************************************************/
+
+void nins_used2idle_one(struct di_ch_s *pch, struct dim_nins_s *ins)
+{
+	if ((!pch) || (pch->itf.etype != EDIM_NIN_TYPE_VFM)) {
+		PR_ERR("%s:\n", __func__);
+		return;
+	}
+}
+
+/**************************************
+ * bufq_ins_in_vf
+ *	get vf from pre driver
+ *	_IDLE -> _CHECK
+ * set ins
+ *	*pvf
+ *	vf_copy
+ **************************************/
+
+static bool nins_m_in_vf(struct di_ch_s *pch)
+{
+	struct buf_que_s *pbufq;
+	unsigned int in_nub, free_nub;
+	int i;
+	unsigned int ch;
+	struct vframe_s *vf;
+	struct dim_nins_s	*pins;
+	unsigned int index;
+	bool flg_q;
+	unsigned int err_cnt = 0;
+
+	if (!pch) {
+		PR_ERR("%s:\n", __func__);
+		return false;
+	}
+	ch = pch->ch_id;
+	pbufq = &pch->nin_qb;
+
+	in_nub		= qbufp_count(pbufq, QBF_NINS_Q_CHECK);
+	free_nub	= qbufp_count(pbufq, QBF_NINS_Q_IDLE);
+
+	if ((in_nub >= DIM_K_VFM_IN_LIMIT)	||
+	    (free_nub < (DIM_K_VFM_IN_LIMIT - in_nub))) {
+		return false;
+	}
+
+	for (i = 0; i < (DIM_K_VFM_IN_LIMIT - in_nub); i++) {
+		vf = pw_vf_peek(ch);
+		if (!vf)
+			break;
+
+		vf = pw_vf_get(ch);
+		if (!vf)
+			break;
+
+		/* get ins */
+		flg_q = qbuf_out(pbufq, QBF_NINS_Q_IDLE, &index);
+		if (!flg_q) {
+			PR_ERR("%s:qout\n", __func__);
+			err_cnt++;
+			pw_vf_put(vf, ch);
+			break;
+		}
+		pins = (struct dim_nins_s *)pbufq->pbuf[index].qbc;
+		pins->c.ori = vf;
+		pins->c.cnt = pch->in_cnt;
+		pch->in_cnt++;
+		//pins->c.etype = EDIM_NIN_TYPE_VFM;
+		memcpy(&pins->c.vfm_cp, vf, sizeof(pins->c.vfm_cp));
+		flg_q = qbuf_in(pbufq, QBF_NINS_Q_CHECK, index);
+		if (!flg_q) {
+			PR_ERR("%s:qin\n", __func__);
+			err_cnt++;
+			pw_vf_put(vf, ch);
+			qbuf_in(pbufq, QBF_NINS_Q_IDLE, index);
+			break;
+		}
+		if (pch->in_cnt < 4) {
+			if (pch->in_cnt == 1)
+				dbg_timer(ch, EDBG_TIMER_1_GET);
+			else if (pch->in_cnt == 2)
+				dbg_timer(ch, EDBG_TIMER_2_GET);
+			else if (pch->in_cnt == 3)
+				dbg_timer(ch, EDBG_TIMER_3_GET);
+		}
+	}
+
+	if (err_cnt)
+		return false;
+	return true;
+}
+
+static void vfm_m_fill_ready(struct di_ch_s *pch)
+{
+	pw_vf_notify_receiver(pch->ch_id,
+			      VFRAME_EVENT_PROVIDER_VFRAME_READY, NULL);
+}
+
+/*for first frame no need to ready buf*/
+/* @ary_note: this only used for vfm */
+static bool dim_bypass_first_frame(struct di_ch_s *pch)
+{
+	struct vframe_s *vframe;
+	struct dim_nins_s *nins;
+	unsigned int ch;
+	//struct di_ch_s *pch;
+
+	ch = pch->ch_id;
+	nins = nins_peek(pch);
+	if (!nins)
+		return false;
+
+	nins = nins_get(pch);
+	vframe = nins->c.ori;
+	nins->c.ori = NULL;
+	nins_used_some_to_recycle(pch, nins);
+
+	ndrd_qin(pch, vframe);
+
+	pw_vf_notify_receiver(ch,
+			      VFRAME_EVENT_PROVIDER_VFRAME_READY, NULL);
+
+	PR_INF("%s:ok\n", __func__);
+	return true;
+}
+
+static struct vframe_s *dim_nbypass_get(struct di_ch_s *pch)
+{
+	struct vframe_s *vframe;
+	struct dim_nins_s *nins;
+
+	nins = nins_peek(pch);
+	if (!nins)
+		return NULL;
+
+	nins = nins_get(pch);
+	vframe = nins->c.ori;
+	nins->c.ori = NULL;
+	nins_used_some_to_recycle(pch, nins);
+
+	pw_vf_notify_receiver(pch->ch_id,
+			      VFRAME_EVENT_PROVIDER_VFRAME_READY, NULL);
+
+	//PR_INF("%s:ok\n", __func__);
+	return vframe;
+}
+
+static struct vframe_s *dim_nbypass_peek(struct di_ch_s *pch)
+{
+	struct vframe_s *vframe;
+
+	vframe = nins_peekvfm(pch);
+	return vframe;
+}
+
+/* @ary_note: api for release */
+void dim_post_keep_cmd_release2_local(struct vframe_s *vframe)
+{
+	//struct di_buf_s *di_buf;
+	struct dim_ndis_s *ndis;
+
+	if (!dil_get_diffver_flag())
+		return;
+	if (!vframe) {
+		PR_ERR("%s:no vfm\n", __func__);
+		return;
+	}
+
+//#ifdef TST_NEW_INS_INTERFACE
+	//@ary_note:temp:
+	if (dim_dbg_new_int(1)) {
+		PR_ERR("%s:extbuff\n", __func__);
+		return;
+	}
+//#endif
+	ndis = (struct dim_ndis_s *)vframe->private_data;
+	//di_buf = (struct di_buf_s *)vframe->private_data;
+
+	if (!ndis) {
+		/* for bypass mode, di no need back vf buffer */
+		//PR_WARN("%s:no di_buf\n", __func__);
+		/* bypass mode */
+		return;
+	}
+
+	sum_release_inc(ndis->header.ch);
+	dbg_keep("release keep ch[%d],index[%d]\n",
+		 ndis->header.ch,
+		 ndis->header.index);
+	//dbg_wq("k:c[%d]\n", di_buf->index);
+	task_send_cmd2(ndis->header.ch,
+		       LCMD2(ECMD_RL_KEEP,
+			     ndis->header.ch,
+			     ndis->header.index));
+}
+
+static void dev_vframe_reg_first(struct dim_itf_s *itf)
+{
+	//struct dev_vfram_t *pvfm;
+	struct dev_vfm_s *pvfmc;
+
+	itf->etype = EDIM_NIN_TYPE_VFM;
+	//pvfm = &itf->dvfm;
+	pvfmc = &itf->u.dvfmc;
+
+	/* clear */
+	memset(pvfmc, 0, sizeof(*pvfmc));
+	pvfmc->vf_m_fill_polling	= nins_m_in_vf;
+	pvfmc->vf_m_fill_ready		= vfm_m_fill_ready;
+	pvfmc->vf_m_bypass_first_frame	= dim_bypass_first_frame;
+	itf->opins_m_back_in	= nins_m_recycle;
+	itf->op_fill_ready	= ndis_fill_ready;
+	itf->op_m_unreg		= nins_m_unreg;
+	itf->op_ready_out	= NULL;
+}
+
+static void dev_vframe_reg(struct dim_itf_s *itf)
 {
 	struct dev_vfram_t *pvfm;
 
-	pvfm = get_dev_vframe(ch);
-	dev_vframe_unreg(pvfm);
+	pvfm = &itf->dvfm;
+	vf_reg_provider(&pvfm->di_vf_prov);
+	vf_notify_receiver(pvfm->name, VFRAME_EVENT_PROVIDER_START, NULL);
+}
+
+#ifdef MARK_HIS
+static void dev_vframe_unreg(struct dim_itf_s *itf)
+{
+	struct dev_vfram_t *pvfm;
+
+	pvfm = &itf->dvfm;
+	if (itf->reg) {
+		pr_debug("%s:ch[%s]:begin\n", __func__, pvfm->name);
+		vf_unreg_provider(&pvfm->di_vf_prov);
+		pr_debug("%s:ch[%s]:end\n", __func__, pvfm->name);
+		itf->reg = 0;
+	}
+}
+#endif
+
+static int di_ori_event_qurey_vdin2nr(unsigned int channel)
+{
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+
+	return ppre->vdin2nr;
+}
+
+static int di_ori_event_reset(unsigned int channel)
+{
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+	struct vframe_s **pvframe_in = get_vframe_in(channel);
+	int i;
+//ary 2020-12-09	ulong flags;
+
+	/*block*/
+	di_block_set(1);//di_blocking = 1;
+
+	/*dbg_ev("%s: VFRAME_EVENT_PROVIDER_RESET\n", __func__);*/
+	if (dim_is_bypass(NULL, channel)	||
+	    di_bypass_state_get(channel)	||
+	    ppre->bypass_flag) {
+		pw_vf_notify_receiver(channel,
+				      VFRAME_EVENT_PROVIDER_RESET,
+			NULL);
+	}
+
+//ary 2020-12-09	spin_lock_irqsave(&plist_lock, flags);
+	for (i = 0; i < MAX_IN_BUF_NUM; i++) {
+		if (pvframe_in[i])
+			pr_dbg("DI:clear vframe_in[%d]\n", i);
+
+		pvframe_in[i] = NULL;
+	}
+//ary 2020-12-09	spin_unlock_irqrestore(&plist_lock, flags);
+	di_block_set(0);//di_blocking = 0;
+
+	return 0;
+}
+
+static int di_ori_event_light_unreg(unsigned int channel)
+{
+	struct vframe_s **pvframe_in = get_vframe_in(channel);
+	int i;
+//ary 2020-12-09	ulong flags;
+
+	di_block_set(1);//di_blocking = 1;
+
+	pr_dbg("%s: vf_notify_receiver ligth unreg\n", __func__);
+
+//ary 2020-12-09	spin_lock_irqsave(&plist_lock, flags);
+	for (i = 0; i < MAX_IN_BUF_NUM; i++) {
+		if (pvframe_in[i])
+			pr_dbg("DI:clear vframe_in[%d]\n", i);
+
+		pvframe_in[i] = NULL;
+	}
+//ary 2020-12-09	spin_unlock_irqrestore(&plist_lock, flags);
+	di_block_set(0);//di_blocking = 0;
+
+	return 0;
+}
+
+static int di_ori_event_light_unreg_revframe(unsigned int channel)
+{
+	struct vframe_s **pvframe_in = get_vframe_in(channel);
+	int i;
+//ary 2020-12-09	ulong flags;
+
+	unsigned char vf_put_flag = 0;
+
+	pr_info("%s:VFRAME_EVENT_PROVIDER_LIGHT_UNREG_RETURN_VFRAME\n",
+		__func__);
+/*
+ * do not display garbage when 2d->3d or 3d->2d
+ */
+//ary 2020-12-09	spin_lock_irqsave(&plist_lock, flags);
+	for (i = 0; i < MAX_IN_BUF_NUM; i++) {
+		if (pvframe_in[i]) {
+			pw_vf_put(pvframe_in[i], channel);
+			pr_dbg("DI:clear vframe_in[%d]\n", i);
+			vf_put_flag = 1;
+		}
+		pvframe_in[i] = NULL;
+	}
+	if (vf_put_flag)
+		pw_vf_notify_provider(channel,
+				      VFRAME_EVENT_RECEIVER_PUT, NULL);
+
+//ary 2020-12-09	spin_unlock_irqrestore(&plist_lock, flags);
+
+	return 0;
+}
+
+static int di_irq_ori_event_ready(unsigned int channel)
+{
+	return 0;
+}
+
+static int di_ori_event_ready(unsigned int channel)
+{
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+
+	if (ppre->bypass_flag)
+		pw_vf_notify_receiver(channel,
+				      VFRAME_EVENT_PROVIDER_VFRAME_READY,
+				      NULL);
+
+	if (dip_chst_get(channel) == EDI_TOP_STATE_REG_STEP1)
+		task_send_cmd(LCMD1(ECMD_READY, channel));
+	else
+		task_send_ready(9);
+
+	di_irq_ori_event_ready(channel);
+	return 0;
+}
+
+static int di_ori_event_qurey_state(unsigned int channel)
+{
+	/*int in_buf_num = 0;*/
+	struct vframe_states states;
+
+	if (dim_vcry_get_flg())
+		return RECEIVER_INACTIVE;
+
+	/*fix for ucode reset method be break by di.20151230*/
+	di_vf_l_states(&states, channel);
+	if (states.buf_avail_num > 0)
+		return RECEIVER_ACTIVE;
+
+	if (pw_vf_notify_receiver(channel,
+				  VFRAME_EVENT_PROVIDER_QUREY_STATE,
+				  NULL) == RECEIVER_ACTIVE)
+		return RECEIVER_ACTIVE;
+
+	return RECEIVER_INACTIVE;
+}
+
+static void  di_ori_event_set_3D(int type, void *data, unsigned int channel)
+{
+#ifdef DET3D
+
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+
+	if (type == VFRAME_EVENT_PROVIDER_SET_3D_VFRAME_INTERLEAVE) {
+		int flag = (long)data;
+
+		ppre->vframe_interleave_flag = flag;
+	}
+
+#endif
+}
+
+/*************************/
+/************************************/
+/************************************/
+struct vframe_s *di_vf_l_get(unsigned int channel)
+{
+	vframe_t *vframe_ret = NULL;
+//	struct di_buf_s *di_buf = NULL;
+	struct di_ch_s *pch;
+
+//	struct vframe_s *vfm_dbg;
+//	ulong irq_flag2 = 0;
+	struct dim_ndis_s *ndis1, *ndis2;
+
+	dim_print("%s:ch[%d]\n", __func__, channel);
+
+	pch = get_chdata(channel);
+
+	/* special case */
+	if (!get_init_flag(channel)	||
+	    dim_vcry_get_flg()		||
+	    di_block_get()			||
+	    !get_reg_flag(channel)	||
+	    dump_state_flag_get()) {
+		dim_tr_ops.post_get2(1);
+		return NULL;
+	}
+
+	/**************************/
+	if (ndis_cnt(pch, QBF_NDIS_Q_DISPLAY) > DI_POST_GET_LIMIT) {
+		dim_tr_ops.post_get2(2);
+		return NULL;
+	}
+	/**************************/
+	vframe_ret = ndrd_qout(pch);
+	if ((!vframe_ret) || (!vframe_ret->private_data)) {
+		dbg_nq("%s:bypass?\n", __func__);
+		didbg_vframe_out_save(channel, vframe_ret, 3);
+		return vframe_ret;
+	}
+	ndis1 = (struct dim_ndis_s *)vframe_ret->private_data;
+	if (!ndis1) /*is bypass*/
+		return vframe_ret;
+	ndis2 = ndis_move(pch, QBF_NDIS_Q_USED, QBF_NDIS_Q_DISPLAY);
+	if (ndis1 != ndis2)
+		PR_ERR("%s:\n", __func__);
+	didbg_vframe_out_save(channel, vframe_ret, 4);
+	dim_tr_ops.post_get(vframe_ret->index_disp);
+	return vframe_ret;
+}
+
+#ifdef MARK_HIS
+void di_vf_l_put(struct vframe_s *vf, unsigned char channel)
+{
+	struct di_buf_s *di_buf = NULL;
+	ulong irq_flag2 = 0;
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+//	struct di_post_stru_s *ppost = get_post_stru(channel);
+
+	dim_print("%s:ch[%d]\n", __func__, channel);
+
+	if (ppre->bypass_flag) {
+		pw_vf_put(vf, channel);
+		pw_vf_notify_provider(channel,
+				      VFRAME_EVENT_RECEIVER_PUT, NULL);
+
+		//if (!IS_ERR_OR_NULL(ppost->keep_buf))
+		//	recycle_keep_buffer(channel);
+		return;
+	}
+/* struct di_buf_s *p = NULL; */
+/* int itmp = 0; */
+	if (!get_init_flag(channel)	||
+	    dim_vcry_get_flg()		||
+	    IS_ERR_OR_NULL(vf)) {
+		PR_ERR("%s: 0x%p\n", __func__, vf);
+		return;
+	}
+	if (di_block_get())
+		return;
+	dim_log_buffer_state("pu_", channel);
+	di_buf = (struct di_buf_s *)vf->private_data;
+	if (IS_ERR_OR_NULL(di_buf)) {
+		pw_vf_put(vf, channel);
+		pw_vf_notify_provider(channel,
+				      VFRAME_EVENT_RECEIVER_PUT, NULL);
+		PR_WARN("%s: get vframe %p without di buf\n",
+			__func__, vf);
+		return;
+	}
+
+	if (di_buf->type == VFRAME_TYPE_POST) {
+		#ifdef MARK_HIS
+		if (!di_buf->blk_buf) {
+			PR_ERR("%s:no blk_buf ind[%d]\n",
+				__func__, di_buf->index);
+		}
+		#endif
+		#ifdef MARK_HIS
+		if (di_buf->in_buf)
+			dbg_nins_log_buf(di_buf->in_buf, 3);
+		#endif
+		di_lock_irqfiq_save(irq_flag2);
+
+		if (is_in_queue(channel, di_buf, QUEUE_DISPLAY)) {
+			di_buf->queue_index = -1;
+			di_que_in(channel, QUE_POST_BACK, di_buf);
+			di_unlock_irqfiq_restore(irq_flag2);
+
+		} else {
+			task_send_cmd2(channel,
+				       LCMD2(ECMD_RL_KEEP,
+				       channel,
+				       di_buf->index));
+			di_unlock_irqfiq_restore(irq_flag2);
+			PR_WARN("%s:ch[%d]not in display %d\n",
+				__func__, channel, di_buf->index);
+		}
+	} else {
+		PR_ERR("%s:t[%d][%d]\n", __func__, di_buf->type, di_buf->index);
+
+		di_lock_irqfiq_save(irq_flag2);
+		queue_in(channel, di_buf, QUEUE_RECYCLE);
+		di_unlock_irqfiq_restore(irq_flag2);
+
+		dim_print("%s: %s[%d] =>recycle_list\n", __func__,
+			  dim_get_vfm_type_name(di_buf->type), di_buf->index);
+	}
+
+	task_send_ready();
+}
+#else
+void di_vf_l_put(struct vframe_s *vf, unsigned char channel)
+{
+//	struct di_buf_s *di_buf = NULL;
+//	ulong irq_flag2 = 0;
+	//struct di_pre_stru_s *ppre = get_pre_stru(channel);
+//	struct di_post_stru_s *ppost = get_post_stru(channel);
+	struct di_ch_s *pch;
+	struct dim_ndis_s *ndis1;
+
+	dim_print("%s:ch[%d]\n", __func__, channel);
+
+	pch = get_chdata(channel);
+
+	/* special case */
+	if (!get_init_flag(channel)	||
+	    dim_vcry_get_flg()		||
+	    IS_ERR_OR_NULL(vf)) {
+		PR_ERR("%s: 0x%p\n", __func__, vf);
+		return;
+	}
+	if (di_block_get())
+		return;
+
+	ndis1 = (struct dim_ndis_s *)vf->private_data;
+	if (IS_ERR_OR_NULL(ndis1)) {
+		pw_vf_put(vf, channel);
+		pw_vf_notify_provider(channel,
+				      VFRAME_EVENT_RECEIVER_PUT, NULL);
+		//PR_WARN("%s: get vframe %p without di buf\n",
+		//	__func__, vf);
+		return;
+	}
+	task_send_cmd2(channel,
+			LCMD2(ECMD_RL_KEEP,
+			     channel,
+			     ndis1->header.index));
+	//task_send_ready();
+}
+
+#endif
+
+#ifdef MARK_HIS
+struct vframe_s *di_vf_l_peek(unsigned int channel)
+{
+	struct vframe_s *vframe_ret = NULL;
+	struct di_buf_s *di_buf = NULL;
+	struct di_pre_stru_s *ppre = get_pre_stru(channel);
+
+	/*dim_print("%s:ch[%d]\n",__func__, channel);*/
+
+	di_sum_inc(channel, EDI_SUM_O_PEEK_CNT);
+	if (ppre->bypass_flag) {
+		dim_tr_ops.post_peek(0);
+		return pw_vf_peek(channel);
+	}
+	if (!get_init_flag(channel)	||
+	    dim_vcry_get_flg()		||
+	    di_block_get()			||
+	    !get_reg_flag(channel)	||
+	    dump_state_flag_get()) {
+		dim_tr_ops.post_peek(1);
+		return NULL;
+	}
+
+	/**************************/
+	if (list_count(channel, QUEUE_DISPLAY) > DI_POST_GET_LIMIT) {
+		dim_tr_ops.post_peek(2);
+		return NULL;
+	}
+	/**************************/
+	dim_log_buffer_state("pek", channel);
+
+	if (!di_que_is_empty(channel, QUE_POST_READY)) {
+		di_buf = di_que_peek(channel, QUE_POST_READY);
+		if (di_buf)
+			vframe_ret = di_buf->vframe;
+	}
+#ifdef DI_BUFFER_DEBUG
+	if (vframe_ret)
+		dim_print("%s: %s[%d]:%x\n", __func__,
+			  dim_get_vfm_type_name(di_buf->type),
+			  di_buf->index, vframe_ret);
+#endif
+	if (vframe_ret) {
+		dim_tr_ops.post_peek(9);
+	} else {
+		task_send_ready();
+		dim_tr_ops.post_peek(4);
+	}
+	return vframe_ret;
+}
+#else
+struct vframe_s *di_vf_l_peek(unsigned int channel)
+{
+	struct vframe_s *vframe_ret = NULL;
+//	struct di_buf_s *di_buf = NULL;
+	struct di_ch_s *pch;
+//	struct dim_ndis_s *ndis1;
+
+	//struct di_pre_stru_s *ppre = get_pre_stru(channel);
+
+	/*dim_print("%s:ch[%d]\n",__func__, channel);*/
+	pch = get_chdata(channel);
+	di_sum_inc(channel, EDI_SUM_O_PEEK_CNT);
+
+	/* special case */
+	if (!get_init_flag(channel)	||
+	    dim_vcry_get_flg()		||
+	    di_block_get()			||
+	    !get_reg_flag(channel)	||
+	    dump_state_flag_get()) {
+		dim_tr_ops.post_peek(1);
+		return NULL;
+	}
+
+	/**************************/
+	if (ndis_cnt(pch, QBF_NDIS_Q_DISPLAY) > DI_POST_GET_LIMIT) {
+		dim_tr_ops.post_peek(2);
+		return NULL;
+	}
+	/**************************/
+	vframe_ret = ndrd_qpeekvfm(pch);
+
+	if (vframe_ret) {
+		dim_tr_ops.post_peek(9);
+	} else {
+//		task_send_ready(22);
+		dim_tr_ops.post_peek(4);
+	}
+	return vframe_ret;
+}
+
+#endif
+int di_vf_l_states(struct vframe_states *states, unsigned int channel)
+{
+	struct div2_mm_s *mm = dim_mm_get(channel);
+	struct dim_sum_s *psumx = get_sumx(channel);
+
+	/*pr_info("%s: ch[%d]\n", __func__, channel);*/
+	if (!states)
+		return -1;
+	states->vf_pool_size = mm->sts.num_local;
+	states->buf_free_num = psumx->b_pre_free;
+
+	states->buf_avail_num = psumx->b_pst_ready;
+	states->buf_recycle_num = psumx->b_recyc;
+	if (dimp_get(edi_mp_di_dbg_mask) & 0x1) {
+		di_pr_info("di-pre-ready-num:%d\n", psumx->b_pre_ready);
+		di_pr_info("di-display-num:%d\n", psumx->b_display);
+	}
+	return 0;
 }
 
 /*--------------------------*/
@@ -110,9 +802,11 @@ static int di_receiver_event_fun(int type, void *data, void *arg)
 	struct dev_vfram_t *pvfm;
 	unsigned int ch;
 	int ret = 0;
+	struct di_ch_s *pch;
+	char *provider_name = (char *)data;
 
 	ch = *(int *)arg;
-
+	pch = get_chdata(ch);
 	pvfm = get_dev_vframe(ch);
 
 	if (type <= VFRAME_EVENT_PROVIDER_CMD_MAX	&&
@@ -124,13 +818,39 @@ static int di_receiver_event_fun(int type, void *data, void *arg)
 
 	switch (type) {
 	case VFRAME_EVENT_PROVIDER_UNREG:
-		ret = di_ori_event_unreg(ch);
-/*		task_send_cmd(LCMD1(eCMD_UNREG, 0));*/
+		mutex_lock(&pch->itf.lock_reg);
+		if (!pch->itf.reg) {
+			mutex_unlock(&pch->itf.lock_reg);
+			PR_WARN("duplicate ureg\n");
+			break;
+		}
+		mutex_unlock(&pch->itf.lock_reg);
+		vf_unreg_provider(&pch->itf.dvfm.di_vf_prov);
+		mutex_lock(&pch->itf.lock_reg);
+		pch->itf.reg = 0;
+		//dev_vframe_unreg(&pch->itf);
+		dim_trig_unreg(ch);
+		dim_api_unreg(DIME_REG_MODE_VFM, pch);
+		mutex_unlock(&pch->itf.lock_reg);
 		break;
 	case VFRAME_EVENT_PROVIDER_REG:
-		/*dev_vframe_reg(pvfm);*/
-		ret = di_ori_event_reg(data, ch);
-/*		task_send_cmd(LCMD1(eCMD_REG, 0));*/
+
+		mutex_lock(&pch->itf.lock_reg);
+		if (pch->itf.reg) {
+			PR_WARN("duplicate reg\n");
+			mutex_unlock(&pch->itf.lock_reg);
+			break;
+		}
+		dev_vframe_reg_first(&pch->itf);
+		pch->sum_reg_cnt++;
+		dbg_ev("reg:%s[%d]\n", provider_name, pch->sum_reg_cnt);
+
+		dim_api_reg(DIME_REG_MODE_VFM, pch);
+
+		dev_vframe_reg(&pch->itf);
+		pch->itf.reg = 1;
+		mutex_unlock(&pch->itf.lock_reg);
+
 		break;
 	case VFRAME_EVENT_PROVIDER_START:
 		break;
@@ -172,6 +892,7 @@ static const struct vframe_receiver_op_s di_vf_receiver = {
 	.event_cb	= di_receiver_event_fun
 };
 
+#ifdef MARK_HIS
 bool vf_type_is_prog(unsigned int type)
 {
 	bool ret = (type & VIDTYPE_TYPEMASK) == 0 ? true : false;
@@ -313,13 +1034,14 @@ bool vf_type_is_vd2(unsigned int type)
 
 	return ret;
 }
+#endif
 
 bool is_bypss_complete(struct dev_vfram_t *pvfm)
 {
 	return pvfm->bypass_complete;
 }
 
-#if 0
+#ifdef MARK_HIS
 bool is_reg(unsigned int ch)
 {
 	struct dev_vfram_t *pvfm;
@@ -330,6 +1052,7 @@ bool is_reg(unsigned int ch)
 }
 #endif
 
+#ifdef MARK_HIS
 void set_bypass_complete(struct dev_vfram_t *pvfm, bool on)
 {
 	if (on)
@@ -337,7 +1060,9 @@ void set_bypass_complete(struct dev_vfram_t *pvfm, bool on)
 	else
 		pvfm->bypass_complete = false;
 }
+#endif
 
+#ifdef MARK_HIS //move to di_prc for interface
 void set_bypass2_complete(unsigned int ch, bool on)
 {
 	struct dev_vfram_t *pvfm;
@@ -354,38 +1079,43 @@ bool is_bypss2_complete(unsigned int ch)
 
 	return is_bypss_complete(pvfm);
 }
-
-#if 0
-static void set_reg(unsigned int ch, int on)
-{
-	struct dev_vfram_t *pvfm;
-
-	pvfm = get_dev_vframe(ch);
-
-	if (on)
-		pvfm->reg = true;
-	else
-		pvfm->reg = false;
-}
 #endif
+
 static struct vframe_s *di_vf_peek(void *arg)
 {
 	unsigned int ch = *(int *)arg;
+	struct di_ch_s *pch;
+	struct vframe_s *vfm;
 
 	/*dim_print("%s:ch[%d]\n",__func__,ch);*/
+	pch = get_chdata(ch);
+
+	if (!pch->itf.reg)
+		return NULL;
+
 	if (di_is_pause(ch))
 		return NULL;
 
-	if (is_bypss2_complete(ch))
+	if (is_bypss2_complete(ch)) {
+		vfm = dim_nbypass_peek(pch);
+		if (vfm)
+			return vfm;
 		return pw_vf_peek(ch);
-	else
-		return di_vf_l_peek(ch);
+	}
+	return di_vf_l_peek(ch);
 }
 
 static struct vframe_s *di_vf_get(void *arg)
 {
 	unsigned int ch = *(int *)arg;
+	struct di_ch_s *pch;
+	struct vframe_s *vfm;
+
 	/*struct vframe_s *vfm;*/
+	pch = get_chdata(ch);
+
+	if (!pch->itf.reg)
+		return NULL;
 
 	dim_tr_ops.post_get2(5);
 	if (di_is_pause(ch))
@@ -395,14 +1125,13 @@ static struct vframe_s *di_vf_get(void *arg)
 
 	/*pvfm = get_dev_vframe(ch);*/
 
-	if (is_bypss2_complete(ch))
-	#if 0
-		vfm = pw_vf_peek(ch);
-		if (dim_bypass_detect(ch, vfm))
-			return NULL;
-
-	#endif
+	if (is_bypss2_complete(ch)) {
+		vfm = dim_nbypass_get(pch);
+		if (vfm)
+			return vfm;
 		return pw_vf_get(ch);
+	}
+	sum_pst_g_inc(ch);
 
 	return di_vf_l_get(ch);
 }
@@ -410,6 +1139,14 @@ static struct vframe_s *di_vf_get(void *arg)
 static void di_vf_put(struct vframe_s *vf, void *arg)
 {
 	unsigned int ch = *(int *)arg;
+	struct di_ch_s *pch;
+
+	pch = get_chdata(ch);
+
+	if (!pch->itf.reg) {
+		PR_ERR("%s:ch[%d],unreg?\n", __func__, ch);
+		return;
+	}
 
 	if (is_bypss2_complete(ch)) {
 		pw_vf_put(vf, ch);
@@ -417,6 +1154,8 @@ static void di_vf_put(struct vframe_s *vf, void *arg)
 				      VFRAME_EVENT_RECEIVER_PUT, NULL);
 		return;
 	}
+
+	sum_pst_p_inc(ch);
 
 	di_vf_l_put(vf, ch);
 }
@@ -452,7 +1191,6 @@ static const struct vframe_operations_s deinterlace_vf_provider = {
 	.vf_states	= di_vf_states,
 };
 
-#if 1
 struct vframe_s *pw_vf_get(unsigned int ch)
 {
 	sum_g_inc(ch);
@@ -461,13 +1199,19 @@ struct vframe_s *pw_vf_get(unsigned int ch)
 
 struct vframe_s *pw_vf_peek(unsigned int ch)
 {
+	#ifdef CONFIG_AMLOGIC_MEDIA_VFM
 	return vf_peek(di_rev_name[ch]);
+	#else
+	return NULL;
+	#endif
 }
 
 void pw_vf_put(struct vframe_s *vf, unsigned int ch)
 {
 	sum_p_inc(ch);
+	#ifdef CONFIG_AMLOGIC_MEDIA_VFM
 	vf_put(vf, di_rev_name[ch]);
+	#endif
 }
 
 int pw_vf_notify_provider(unsigned int channel, int event_type, void *data)
@@ -491,41 +1235,22 @@ void pw_vf_light_unreg_provider(unsigned int ch)
 	vf_light_unreg_provider(prov);
 }
 
-#else
-struct vframe_s *pw_vf_get(unsigned int channel)
-{
-	return vf_get(VFM_NAME);
-}
-
-struct vframe_s *pw_vf_peek(unsigned int channel)
-{
-	return vf_peek(VFM_NAME);
-}
-
-void pw_vf_put(struct vframe_s *vf, unsigned int channel)
-{
-	vf_put(vf, VFM_NAME);
-}
-
-int pw_vf_notify_provider(unsigned int channel, int event_type, void *data)
-{
-	return vf_notify_provider(VFM_NAME, event_type, data);
-}
-
-int pw_vf_notify_receiver(unsigned int channel, int event_type, void *data)
-{
-	return vf_notify_receiver(VFM_NAME, event_type, data);
-}
-
-#endif
-
 void dev_vframe_exit(void)
 {
 	struct dev_vfram_t *pvfm;
 	int ch;
+	struct di_ch_s *pch;
+
+#ifdef TST_NEW_INS_INTERFACE
+		vfmtst_exit();
+		PR_INF("new ins interface test end\n");
+		return;
+#endif
 
 	for (ch = 0; ch < DI_CHANNEL_NUB; ch++) {
-		pvfm = get_dev_vframe(ch);
+		//pvfm = get_dev_vframe(ch);
+		pch = get_chdata(ch);
+		pvfm = &pch->itf.dvfm;
 		vf_unreg_provider(&pvfm->di_vf_prov);
 		vf_unreg_receiver(&pvfm->di_vf_recv);
 	}
@@ -536,9 +1261,25 @@ void dev_vframe_init(void)
 {
 	struct dev_vfram_t *pvfm;
 	int ch;
+	struct di_ch_s *pch;
+
+#ifdef TST_NEW_INS_INTERFACE
+	struct dim_itf_s *pintf;
+
+	vfmtst_init();
+	for (ch = 0; ch < DI_CHANNEL_NUB; ch++) {
+		pch = get_chdata(ch);
+		pintf = &pch->itf;
+		pintf->ch = ch;
+	}
+	PR_INF("new ins interface test enable\n");
+	return;
+#endif
 
 	for (ch = 0; ch < DI_CHANNEL_NUB; ch++) {
-		pvfm = get_dev_vframe(ch);
+		pch = get_chdata(ch);
+		pch->itf.ch = ch; //2020-12-21
+		pvfm = &pch->itf.dvfm;
 		pvfm->name = di_rev_name[ch];
 		pvfm->indx = ch;
 		/*set_bypass_complete(pvfm, true);*/ /*test only*/

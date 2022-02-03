@@ -28,12 +28,14 @@
 #include <linux/amlogic/cpu_version.h>
 #include "../../stream_input/amports/amports_priv.h"
 #include "../../frame_provider/decoder/utils/vdec.h"
+#ifdef CONFIG_AMLOGIC_TEE
+#include <linux/amlogic/tee.h>
+#endif
 #include "firmware_priv.h"
 #include "../chips/chips.h"
 #include <linux/string.h>
 #include <linux/amlogic/media/utils/log.h>
 #include <linux/firmware.h>
-#include <linux/amlogic/tee.h>
 #include <linux/amlogic/major.h>
 #include <linux/cdev.h>
 #include <linux/crc32.h>
@@ -85,13 +87,17 @@ int get_firmware_data(unsigned int format, char *buf)
 	struct fw_mgr_s *mgr = g_mgr;
 	struct fw_info_s *info;
 
+#ifdef CONFIG_AMLOGIC_TEE
 	pr_info("[%s], the fw (%s) will be loaded.\n",
 		tee_enabled() ? "TEE" : "LOCAL",
 		get_fw_format_name(format));
 
 	if (tee_enabled())
 		return 0;
-
+#else
+	pr_info("[%s], the fw (%s) will be loaded.\n",
+		"LOCAL", get_fw_format_name(format));
+#endif
 	mutex_lock(&mutex);
 
 	if (list_empty(&mgr->fw_head)) {
@@ -122,12 +128,16 @@ int get_data_from_name(const char *name, char *buf)
 	struct fw_mgr_s *mgr = g_mgr;
 	struct fw_info_s *info;
 	char *fw_name = __getname();
+	int len;
 
 	if (fw_name == NULL)
 		return -ENOMEM;
 
-	strcat(fw_name, name);
-	strcat(fw_name, ".bin");
+	len = snprintf(fw_name, PATH_MAX, "%s.bin", name);
+	if (len >= PATH_MAX) {
+		__putname(fw_name);
+		return -ENAMETOOLONG;
+	}
 
 	mutex_lock(&mutex);
 
@@ -545,7 +555,12 @@ static int fw_replace_dup_data(char *buf)
 			}
 
 			memcpy(data, pinfo->data, len);
+
+			/* update header information. */
 			memcpy(data, info->data, sizeof(*data));
+
+			/* if replaced success need to update real size. */
+			data->head.data_size = comp->head.data_size;
 
 			kfree(info->data);
 			info->data = data;
@@ -828,9 +843,10 @@ int video_fw_reload(int mode)
 	int ret = 0;
 	struct fw_mgr_s *mgr = g_mgr;
 
+#ifdef CONFIG_AMLOGIC_TEE
 	if (tee_enabled())
 		return 0;
-
+#endif
 	mutex_lock(&mutex);
 
 	if (mode & FW_LOAD_FORCE) {

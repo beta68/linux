@@ -38,7 +38,18 @@
 #include "di_pps.h"
 #include "nr_downscale.h"
 #include <linux/amlogic/media/vfm/vframe_provider.h>
+/********************************
+ *trace:
+ *******************************/
+#define CREATE_TRACE_POINTS
+#include "deinterlace_trace.h"
 
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+#define TRACE_INCLUDE_PATH .
+#define TRACE_INCLUDE_FILE deinterlace_trace
+#include <trace/define_trace.h>
+/**********************/
 
 /*2018-07-18 add debugfs*/
 #include <linux/seq_file.h>
@@ -884,6 +895,7 @@ void dump_vframe(struct vframe_s *vf)
 		vf->pixel_ratio, &vf->list);
 	pr_info("di_pulldown 0x%x\n", vf->di_pulldown);
 	pr_info("di_gmv 0x%x\n", vf->di_gmv);
+	pr_info("di_mc_cnt 0x%x\n", vf->di_cm_cnt);
 }
 
 void print_di_buf(struct di_buf_s *di_buf, int format)
@@ -940,6 +952,8 @@ static void print_di_buf_seq(struct di_buf_s *di_buf, int format,
 			di_buf->vframe->type,
 			di_buf->vframe->trans_fmt,
 			di_buf->vframe->bitdepth);
+		seq_printf(seq, "\t\tsts 0x%x,seq:%d\n",
+			   di_buf->sts, di_buf->seq);
 		if (di_buf->di_wr_linked_buf) {
 			seq_printf(seq, "\tlinked  +index %d, 0x%p, type %d\n",
 				di_buf->di_wr_linked_buf->index,
@@ -947,9 +961,10 @@ static void print_di_buf_seq(struct di_buf_s *di_buf, int format,
 				di_buf->di_wr_linked_buf->type);
 		}
 	} else if (format == 2) {
-		seq_printf(seq, "index %d, 0x%p(vframe 0x%p), type %d\n",
+		seq_printf(seq, "index %d, 0x%p(vframe 0x%p), type %d, sts 0x%x\n",
 			di_buf->index, di_buf,
-			di_buf->vframe, di_buf->type);
+			di_buf->vframe, di_buf->type,
+			di_buf->sts);
 		seq_printf(seq, "vframetype 0x%x, trans_fmt %u,duration %d pts %d,bitdepth %d\n",
 			di_buf->vframe->type,
 			di_buf->vframe->trans_fmt,
@@ -1059,27 +1074,6 @@ void dump_buf_addr(struct di_buf_s *di_buf, unsigned int num)
 	}
 }
 
-void dump_afbcd_reg(void)
-{
-	u32 i;
-	u32 afbc_reg;
-
-	pr_info("---- dump afbc eAFBC_DEC0 reg -----\n");
-	for (i = 0; i < AFBC_REG_INDEX_NUB; i++) {
-		afbc_reg = reg_AFBC[eAFBC_DEC0][i];
-		pr_info("reg 0x%x val:0x%x\n", afbc_reg, RDMA_RD(afbc_reg));
-	}
-	pr_info("---- dump afbc eAFBC_DEC1 reg -----\n");
-	for (i = 0; i < AFBC_REG_INDEX_NUB; i++) {
-		afbc_reg = reg_AFBC[eAFBC_DEC1][i];
-		pr_info("reg 0x%x val:0x%x\n", afbc_reg, RDMA_RD(afbc_reg));
-	}
-	pr_info("reg 0x%x val:0x%x\n",
-		VD1_AFBCD0_MISC_CTRL, RDMA_RD(VD1_AFBCD0_MISC_CTRL));
-	pr_info("reg 0x%x val:0x%x\n",
-		VD2_AFBCD1_MISC_CTRL, RDMA_RD(VD2_AFBCD1_MISC_CTRL));
-}
-
 static int dbg_patch_mov_data_show(struct seq_file *seq, void *v)
 {
 	struct di_dev_s *de_devp = get_di_de_devp();
@@ -1125,10 +1119,12 @@ static int seq_file_di_state_show(struct seq_file *seq, void *v)
 	int video_peek_cnt = get_di_video_peek_cnt();
 	unsigned long reg_unreg_timeout_cnt = get_di_reg_unreg_timeout_cnt();
 	struct vframe_s **vframe_in = get_di_vframe_in();
+	char *splt = "---------------------------";
 
 	dump_state_flag = 1;
-	seq_printf(seq, "version %s, init_flag %d, is_bypass %d\n",
-			version_s, init_flag, is_bypass(NULL));
+	seq_printf(seq, "version %s, init_flag %d, is_bypass %d:%d\n",
+			version_s, init_flag, is_bypass(NULL),
+			di_pre_stru_p->is_bypass_fg);
 	seq_printf(seq, "recovery_flag = %d, recovery_log_reason=%d, di_blocking=%d",
 		recovery_flag, recovery_log_reason, di_blocking);
 seq_printf(seq, "recovery_log_queue_idx=%d, recovery_log_di_buf=0x%p\n",
@@ -1203,6 +1199,17 @@ seq_printf(seq, "recovery_log_queue_idx=%d, recovery_log_di_buf=0x%p\n",
 				p->di_wr_linked_buf->post_ref_count);
 		}
 	}
+	/********************************/
+	/* local_list		*/
+	/********************************/
+	seq_puts(seq, "local list\n");
+	for (i = 0; i < MAX_LOCAL_BUF_NUM * 2; i++) {
+		p = di_get_di_buf_local(i);
+		if (!p->pages)
+			continue;
+		print_di_buf_seq(p, 2, seq);
+	}
+	seq_printf(seq, "%s\n", splt);
 	if (di_pre_stru_p->di_inp_buf) {
 		seq_printf(seq, "di_inp_buf:index %d, 0x%p, type %d\n",
 			di_pre_stru_p->di_inp_buf->index,
@@ -1263,6 +1270,29 @@ static int seq_file_afbc_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+static int dbg_afd0_reg_show(struct seq_file *s, void *v)
+{
+	dbg_afd_reg(s, EAFBC_DEC0);
+	return 0;
+}
+
+static int dbg_afd1_reg_show(struct seq_file *s, void *v)
+{
+	dbg_afd_reg(s, EAFBC_DEC1);
+	return 0;
+}
+
+static int dbg_afd2_reg_show(struct seq_file *s, void *v)
+{
+	dbg_afd_reg(s, EAFBC_DEC2_DI);
+	return 0;
+}
+
+static int dbg_afd3_reg_show(struct seq_file *s, void *v)
+{
+	dbg_afd_reg(s, EAFBC_DEC3_MEM);
+	return 0;
+}
 /*2018-08-17 add debugfs*/
 #define DEFINE_SHOW_DI(__name) \
 static int __name ## _open(struct inode *inode, struct file *file)	\
@@ -1285,6 +1315,11 @@ DEFINE_SHOW_DI(seq_file_afbc);
 DEFINE_SHOW_DI(reg_cue_int);
 DEFINE_SHOW_DI(dbg_patch_mov_data);
 
+DEFINE_SHOW_DI(dbg_afbc_cfg);
+DEFINE_SHOW_DI(dbg_afd0_reg);
+DEFINE_SHOW_DI(dbg_afd1_reg);
+DEFINE_SHOW_DI(dbg_afd2_reg);
+DEFINE_SHOW_DI(dbg_afd3_reg);
 struct di_debugfs_files_t {
 	const char *name;
 	const umode_t mode;
@@ -1298,6 +1333,11 @@ static struct di_debugfs_files_t di_debugfs_files[] = {
 	{"dumpafbc", S_IFREG | 0644, &seq_file_afbc_fops},
 	{"reg_cue", S_IFREG | 0644, &reg_cue_int_fops},
 	{"dumpmov", S_IFREG | 0644, &dbg_patch_mov_data_fops},
+	{"afbc_cfg", S_IFREG | 0644, &dbg_afbc_cfg_fops},
+	{"reg_afd0", S_IFREG | 0644, &dbg_afd0_reg_fops},
+	{"reg_afd1", S_IFREG | 0644, &dbg_afd1_reg_fops},
+	{"reg_afd2", S_IFREG | 0644, &dbg_afd2_reg_fops},
+	{"reg_afd3", S_IFREG | 0644, &dbg_afd3_reg_fops},
 };
 
 void di_debugfs_init(void)
@@ -1333,4 +1373,209 @@ void di_debugfs_exit(void)
 		debugfs_remove_recursive(de_devp->dbg_root);
 }
 /*-----------------------*/
+
+/********************************
+ *trace:
+ *******************************/
+
+u64 dicur_to_usecs(void)/*2019*/
+{
+	u64 cur = sched_clock();
+
+	do_div(cur, NSEC_PER_USEC);
+	return cur;
+}
+
+#define DI_TRACE_LIMIT_DEMO		10000
+
+static void trace_pre_cnt0(unsigned int index)
+{
+	u64 data = 0;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	if (is_meson_tm2_cpu() && is_meson_tm2b())
+		data = RDMA_RD(DI_RO_PRE_FIELD_CNT0);
+
+	trace_di_pre_cnt0("PRE-GET-CNT0", index, data);
+}
+
+static void trace_pre_cnt1(unsigned int index)
+{
+	u64 data = 0;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	if (is_meson_tm2_cpu() && is_meson_tm2b())
+		data = RDMA_RD(DI_RO_PRE_FIELD_CNT1);
+	trace_di_pre_cnt1("PRE-GET-CNT1", index, data);
+}
+
+static void trace_pos_cnt0(unsigned int index)
+{
+	u64 data = 0;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	if (is_meson_tm2_cpu() && is_meson_tm2b())
+		data = RDMA_RD(DI_RO_POS_FRAME_CNT0);
+	trace_di_pos_cnt0("POS-GET-CNT0", index, data);
+}
+
+static void trace_pos_cnt1(unsigned int index)
+{
+	u64 data = 0;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	if (is_meson_tm2_cpu() && is_meson_tm2b())
+		data = RDMA_RD(DI_RO_POS_FRAME_CNT1);
+	trace_di_pos_cnt1("POS-GET-CNT1", index, data);
+}
+
+static void di_trace_pre(unsigned int index, unsigned long ctime)
+{
+	trace_di_pre("PRE-IRQ-0", index, ctime);
+}
+
+static void di_trace_post(unsigned int index, unsigned long ctime)
+{
+	trace_di_post("POST-IRQ-1", index, ctime);
+}
+
+static void di_pre_get(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pre_getxx("PRE-GET-01", index, ustime);
+}
+
+static void di_pre_set(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pre_setxx("PRE-SET-01", index, ustime);
+}
+
+static void di_pre_ready(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pre_ready("PRE-READY2", index, ustime);
+}
+
+static void di_post_ready(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_ready("PST-READY3", index, ustime);
+}
+
+static void di_post_get(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_getxx("PST-GET-04", index, ustime);
+}
+
+static void di_post_get2(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_get2x("PST-GET-0a", index, ustime);
+}
+
+static void di_post_set(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_setxx("PST-SET-05", index, ustime);
+}
+
+static void di_post_irq(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_irxxx("PST-IRQ-06", index, ustime);
+}
+
+static void di_post_doing(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_doing("PST-DOI-07", index, ustime);
+}
+
+static void di_post_peek(unsigned int index)
+{
+	u64 ustime;
+
+	if (di_get_disp_cnt_demo() > DI_TRACE_LIMIT_DEMO)
+		return;
+
+	ustime = dicur_to_usecs();
+	trace_di_pst_peekx("PST-PEEK-8", index, ustime);
+}
+
+const struct di_tr_ops_s di_tr_ops = {
+	.pre = di_trace_pre,
+	.post = di_trace_post,
+
+	.pre_cnt0 = trace_pre_cnt0,
+	.pre_cnt1 = trace_pre_cnt1,
+	.pos_cnt0 = trace_pos_cnt0,
+	.pos_cnt1 = trace_pos_cnt1,
+
+	.pre_get = di_pre_get,
+	.pre_set = di_pre_set,
+	.pre_ready = di_pre_ready,
+	.post_ready = di_post_ready,
+	.post_get = di_post_get,
+	.post_get2 = di_post_get2,
+
+	.post_set = di_post_set,
+	.post_ir = di_post_irq,
+	.post_do = di_post_doing,
+	.post_peek = di_post_peek,
+};
 

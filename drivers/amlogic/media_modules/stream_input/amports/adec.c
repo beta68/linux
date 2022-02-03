@@ -25,7 +25,7 @@
 #include <linux/amlogic/media/frame_sync/ptsserv.h>
 #include <linux/amlogic/media/registers/register.h>
 #include <linux/amlogic/media/codec_mm/configs.h>
-#include "../parser/streambuf.h"
+#include "../amports/streambuf.h"
 #include <linux/module.h>
 #include <linux/of.h>
 #include "amports_priv.h"
@@ -341,7 +341,8 @@ s32 astream_dev_register(void)
 		goto err_2;
 	}
 
-	if (AM_MESON_CPU_MAJOR_ID_TXL < get_cpu_major_id()) {
+	if (AM_MESON_CPU_MAJOR_ID_TXL < get_cpu_major_id()
+		&& MESON_CPU_MAJOR_ID_GXLX != get_cpu_type()) {
 		node = of_find_node_by_path("/codec_io/io_cbus_base");
 		if (!node) {
 			pr_info("No io_cbus_base node found.");
@@ -376,7 +377,7 @@ s32 astream_dev_register(void)
 			0x100)) & (PAGE_MASK);
 	}
 
-#if 1
+#ifdef CONFIG_UIO
 	if (uio_register_device(&astream_dev->dev, &astream_uio_info)) {
 		pr_info("astream UIO device register fail.\n");
 		r = -ENODEV;
@@ -403,7 +404,7 @@ err_3:
 void astream_dev_unregister(void)
 {
 	if (astream_dev) {
-#if 1
+#ifdef CONFIG_UIO
 		uio_unregister_device(&astream_uio_info);
 #endif
 

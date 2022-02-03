@@ -1,3 +1,22 @@
+/*
+* Copyright (C) 2017 Amlogic, Inc. All rights reserved.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation; either version 2 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful, but WITHOUT
+* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+* FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+* more details.
+*
+* You should have received a copy of the GNU General Public License along
+* with this program; if not, write to the Free Software Foundation, Inc.,
+* 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+*
+* Description:
+*/
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/vmalloc.h>
@@ -31,11 +50,11 @@ static int read_colorspace_details(struct VP9Context *s, int profile)
 	if (colorspace == AVCOL_SPC_RGB) { // RGB = profile 1
 		if (profile & 1) {
 			if (get_bits1(&s->gb)) {
-				pr_err("Reserved bit set in RGB\n");
+				v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Reserved bit set in RGB\n");
 				return -1;
 			}
 		} else {
-			pr_err("RGB not supported in profile %d\n", profile);
+			v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "RGB not supported in profile %d\n", profile);
 			return -1;
 		}
 	} else {
@@ -52,10 +71,10 @@ static int read_colorspace_details(struct VP9Context *s, int profile)
 			s->ss_v = get_bits1(&s->gb);
 			s->pix_fmt = pix_fmt_for_ss[bits][s->ss_v][s->ss_h];
 			if (s->pix_fmt == AV_PIX_FMT_YUV420P) {
-				pr_err("YUV 4:2:0 not supported in profile %d\n", profile);
+				v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "YUV 4:2:0 not supported in profile %d\n", profile);
 				return -1;
 			} else if (get_bits1(&s->gb)) {
-				pr_err("Profile %d color details reserved bit set\n", profile);
+				v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Profile %d color details reserved bit set\n", profile);
 				return -1;
 			}
 		} else {
@@ -73,12 +92,12 @@ int decode_frame_header(const u8 *data, int size, struct VP9Context *s, int *ref
 
 	/* general header */
 	if ((ret = init_get_bits8(&s->gb, data, size)) < 0) {
-		pr_err("Failed to initialize bitstream reader\n");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Failed to initialize bitstream reader\n");
 		return ret;
 	}
 
 	if (get_bits(&s->gb, 2) != 0x2) { // frame marker
-		pr_err("Invalid frame marker\n");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Invalid frame marker\n");
 		return -1;
 	}
 
@@ -88,7 +107,7 @@ int decode_frame_header(const u8 *data, int size, struct VP9Context *s, int *ref
 		profile += get_bits1(&s->gb);
 
 	if (profile > 3) {
-		pr_err("Profile %d is not yet supported\n", profile);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Profile %d is not yet supported\n", profile);
 		return -1;
 	}
 
@@ -108,7 +127,7 @@ int decode_frame_header(const u8 *data, int size, struct VP9Context *s, int *ref
 
 	if (s->s.h.keyframe) {
 		if (get_bits_long(&s->gb, 24) != VP9_SYNCCODE) { // synccode
-			pr_err("Invalid sync code\n");
+			v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Invalid sync code\n");
 			return -1;
 		}
 		if ((ret = read_colorspace_details(s,profile)) < 0)
@@ -131,7 +150,7 @@ int decode_frame_header(const u8 *data, int size, struct VP9Context *s, int *ref
 		s->s.h.resetctx  = s->s.h.errorres ? 0 : get_bits(&s->gb, 2);
 		if (s->s.h.intraonly) {
 			if (get_bits_long(&s->gb, 24) != VP9_SYNCCODE) { // synccode
-				pr_err("Invalid sync code\n");
+				v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Invalid sync code\n");
 				return -1;
 			}
 			if (profile >= 1) {
@@ -154,7 +173,7 @@ int decode_frame_header(const u8 *data, int size, struct VP9Context *s, int *ref
 				s->render_width = s->width;
 				s->render_height = s->height;
 			}
-			pr_info("intra res: (%d x %d), render size: (%d x %d)\n",
+			v4l_dbg(0, V4L_DEBUG_CODEC_PARSER, "intra res: (%d x %d), render size: (%d x %d)\n",
 				s->width, s->height, s->render_width, s->render_height);
 		} else {
 			s->s.h.refreshrefmask = get_bits(&s->gb, 8);
@@ -215,7 +234,7 @@ int vp9_superframe_split_filter(struct vp9_superframe_split *s)
 				total_size += frame_size;
 				if (frame_size < 0 ||
 					total_size > s->data_size - idx_size) {
-					pr_err( "Invalid frame size in a sframe: %d\n",
+					v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "Invalid frame size in a sframe: %d\n",
 						frame_size);
 					ret = -EINVAL;
 					goto fail;
@@ -246,7 +265,7 @@ int vp9_superframe_split_filter(struct vp9_superframe_split *s)
 		/* colorspace descriptor */
 		/* ... */
 
-		pr_info("the frame is a superframe.\n");
+		v4l_dbg(0, V4L_DEBUG_CODEC_PARSER, "the frame is a superframe.\n");
 	}
 
 	/*pr_err("in: %x, %d, out: %x, sizes %d,%d,%d,%d,%d,%d,%d,%d\n",
@@ -277,7 +296,7 @@ int vp9_decode_extradata_ps(u8 *data, int size, struct vp9_param_sets *ps)
 	s.data_size = size;
 	ret = vp9_superframe_split_filter(&s);
 	if (ret) {
-		pr_err("parse frames failed.\n");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR, "parse frames failed.\n");
 		return ret;
 	}
 

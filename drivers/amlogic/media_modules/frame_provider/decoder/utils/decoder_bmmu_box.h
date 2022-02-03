@@ -48,6 +48,10 @@ int decoder_bmmu_box_alloc_buf_phy(
 	int size, unsigned char *driver_name,
 	unsigned long *buf_phy_addr);
 
+int decoder_bmmu_box_add_callback_func(
+	void *handle, int idx,
+	void *cb);
+
 #define BMMU_ALLOC_FLAGS_WAIT (1 << 0)
 #define BMMU_ALLOC_FLAGS_CAN_CLEAR_KEEPER (1 << 1)
 #define BMMU_ALLOC_FLAGS_WAITCLEAR \
@@ -59,6 +63,9 @@ int decoder_bmmu_box_alloc_idx_wait(
 	int size, int aligned_2n,
 	int mem_flags,
 	int wait_flags);
+
+bool decoder_bmmu_box_valide_check(void *box);
+void decoder_bmmu_try_to_release_box(void *handle);
 
 int decoder_bmmu_box_init(void);
 void decoder_bmmu_box_exit(void);

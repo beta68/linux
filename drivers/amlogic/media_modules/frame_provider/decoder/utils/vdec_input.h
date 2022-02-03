@@ -21,6 +21,8 @@
 struct vdec_s;
 struct vdec_input_s;
 
+typedef void (*chunk_free)(void *priv, u32 handle);
+
 struct vframe_block_list_s {
 	u32 magic;
 	int id;
@@ -37,6 +39,11 @@ struct vframe_block_list_s {
 	int chunk_count;
 	int is_out_buf;
 	u32 handle;
+	ulong mem_handle;
+	/* free callback */
+	chunk_free free;
+	void* priv;
+
 	struct vdec_input_s *input;
 };
 
@@ -56,6 +63,8 @@ struct vframe_chunk_s {
 	bool timestamp_valid;
 	u64 sequence;
 	struct vframe_block_list_s *block;
+	u32 hdr10p_data_size;
+	char *hdr10p_data_buf;
 };
 
 #define VDEC_INPUT_TARGET_VLD           0
@@ -80,8 +89,9 @@ struct vdec_input_s {
 	bool swap_valid;
 	bool swap_needed;
 	bool eos;
-	struct page *swap_page;
-	unsigned long swap_page_phys;
+	ulong mem_handle;
+	void *swap_page;
+	dma_addr_t swap_page_phys;
 	u64 total_wr_count;
 	u64 total_rd_count;
 	u64 streaming_rp;
@@ -105,6 +115,7 @@ struct vdec_input_s {
 	int have_frame_num;
 	int stream_cookie; /* wrap count for vld_mem and
 			      HEVC_SHIFT_BYTE_COUNT for hevc */
+	char vdec_input_name[32];
 	bool (*vdec_is_input_frame_empty)(struct vdec_s *);
 	void (*vdec_up)(struct vdec_s *);
 };
@@ -142,6 +153,9 @@ extern int vdec_input_set_buffer(struct vdec_input_s *input, u32 start,
 /* Add enqueue video data into decoder's input */
 extern int vdec_input_add_frame(struct vdec_input_s *input, const char *buf,
 	size_t count);
+
+extern int vdec_input_add_frame_with_dma(struct vdec_input_s *input, ulong addr,
+	size_t count, u32 handle, chunk_free free, void* priv);
 
 /* Peek next frame data from decoder's input */
 extern struct vframe_chunk_s *vdec_input_next_chunk(

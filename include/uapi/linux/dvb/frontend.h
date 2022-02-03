@@ -265,6 +265,12 @@ enum fe_status {
 	FE_HAS_LOCK		= 0x10,
 	FE_TIMEDOUT		= 0x20,
 	FE_REINIT		= 0x40,
+#ifdef CONFIG_AMLOGIC_DVB_COMPAT
+        BLINDSCAN_NONEDO = 0x80, /* not blind scan  */
+        BLINDSCAN_UPDATESTARTFREQ = 0x100, /* blind scan update start freq  */
+        BLINDSCAN_UPDATEPROCESS   = 0x200, /* blind scan update process  */
+        BLINDSCAN_UPDATERESULTFREQ = 0x400/* blind scan update result  */
+#endif
 };
 
 /**

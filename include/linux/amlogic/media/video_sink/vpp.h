@@ -24,8 +24,9 @@
 #define TV_REVERSE
 
 extern bool super_scaler;
-
-#define VPP_FLAG_WIDEMODE_MASK      0x0000000F
+extern struct sr_info_s sr_info;
+#define VPP_FLAG_WIDEMODE_MASK      0x1F000000
+#define VPP_WIDEMODE_BITS           24
 #define VPP_FLAG_INTERLACE_OUT      0x00000010
 #define VPP_FLAG_INTERLACE_IN       0x00000020
 #define VPP_FLAG_CBCR_SEPARATE      0x00000040
@@ -36,6 +37,9 @@ extern bool super_scaler;
 #define VPP_FLAG_VSCALE_DISABLE     0x00080000
 #define VPP_FLAG_MORE_LOG     0x00100000
 #define VPP_FLAG_FORCE_NO_COMPRESS     0x00200000
+#define VPP_FLAG_FORCE_SWITCH_VF     0x00400000
+#define VPP_FLAG_FORCE_NOT_SWITCH_VF     0x00800000
+#define VPP_FLAG_FROM_TOGGLE_FRAME	0x00000001
 
 #define IDX_H           (2 << 8)
 #define IDX_V_Y         (1 << 13)
@@ -50,11 +54,16 @@ extern bool super_scaler;
 #define SPEED_CHECK_HSKIP	1
 #define SPEED_CHECK_VSKIP	2
 
+#define H_MIRROR   1
+#define V_MIRROR   2
+
 enum vppfilter_state_e {
 	vppfilter_fail = -1,
 	vppfilter_success = 0,
 	vppfilter_success_and_changed,
+	vppfilter_success_and_switched,
 	vppfilter_changed_but_hold,
+	vppfilter_changed_but_switch
 };
 
 enum f2v_vphase_type_e {
@@ -171,6 +180,7 @@ struct disp_info_s {
 	u32 proc_3d_type;
 	bool vpp_3d_scale;
 	u32 nonlinear_factor;
+	u32 nonlinear_t_factor;
 
 	u32 wide_mode;
 	u32 zoom_ratio;
@@ -198,6 +208,17 @@ struct disp_info_s {
 	bool pps_support;
 
 	bool need_no_compress;
+	bool fgrain_support;
+	bool fgrain_enable;
+	bool fgrain_start;
+	bool fgrain_force_update;
+	bool lut_dma_support;
+	bool dv_support;
+	bool alpha_support;
+	s32 sideband_type;
+	u32 mirror;
+	u32 src_width_max;
+	u32 src_height_max;
 };
 
 enum select_scaler_path_e {
@@ -213,6 +234,9 @@ enum select_scaler_path_e {
 	PPS_CORE0_CORE1,
 	PPS_CORE0_POSTBLEND_CORE1,
 	CORE0_PPS_POSTBLEND_CORE1,
+	/* t5d only have core1, support below tow mode */
+	PPS_POSTBLEND_CORE1,
+	PPS_CORE1_CM,
 	SCALER_PATH_MAX,
 };
 /*
@@ -234,6 +258,10 @@ struct sr_info_s {
 	u32 core1_v_disable_width_max;
 	u32 sr_reg_offt;
 	u32 sr_reg_offt2;	/*for tl1*/
+	u32 sr0_sharp_sync_ctrl;
+	u32 sr1_sharp_sync_ctrl;
+	u8 supscl_path;
+	u8 core_support;
 };
 
 #ifdef TV_3D_FUNCTION_OPEN
@@ -307,9 +335,10 @@ extern int vpp_set_filters(
 
 extern s32 vpp_set_nonlinear_factor(
 	struct disp_info_s *info, u32 f);
-
 extern u32 vpp_get_nonlinear_factor(
 	struct disp_info_s *info);
+s32 vpp_set_nonlinear_t_factor(struct disp_info_s *info, u32 f);
+u32 vpp_get_nonlinear_t_factor(struct disp_info_s *info);
 
 extern void vpp_disp_info_init(
 	struct disp_info_s *info, u8 id);

@@ -113,6 +113,7 @@ struct aml_channel {
 	int                  filter_count;
 	struct dvb_demux_feed     *feed;
 	struct dvb_demux_feed     *dvr_feed;
+	int                  pkt_type;
 };
 
 struct aml_filter {
@@ -254,6 +255,7 @@ struct aml_dmx {
 
 	int                   crc_check_count;
 	u32                 crc_check_time;
+	int                 om_status_error_count;
 };
 
 struct aml_dvr_block {
@@ -276,6 +278,7 @@ struct aml_asyncfifo {
 	struct tasklet_struct     asyncfifo_tasklet;
 	struct aml_dvb *dvb;
 	struct aml_dvr_block blk;
+	unsigned long stored_pages;
 };
 
 enum{
@@ -330,11 +333,6 @@ struct aml_dvb {
 	struct aml_swfilter  swfilter;
 	int	ts_out_invert;
 
-	unsigned int tuner_num;
-	unsigned int tuner_cur;
-	struct aml_tuner *tuners;
-	bool tuner_attached;
-
 	/*bufs for dmx shared*/
 	unsigned long        pes_pages;
 	unsigned long        pes_pages_map;
@@ -342,8 +340,6 @@ struct aml_dvb {
 	unsigned long        sub_pages;
 	unsigned long        sub_pages_map;
 	int                  sub_buf_len;
-
-
 };
 
 
@@ -399,6 +395,7 @@ extern struct aml_dvb *aml_get_dvb_device(void);
 
 extern int aml_regist_dmx_class(void);
 extern int aml_unregist_dmx_class(void);
+extern void aml_register_parser_mconfig(void);
 
 struct devio_aml_platform_data {
 	int (*io_setup)(void *);

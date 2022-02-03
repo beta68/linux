@@ -31,7 +31,7 @@
 #include <linux/workqueue.h>
 #include <linux/dma-mapping.h>
 #include <linux/atomic.h>
-#include <linux/amlogic/tee.h>
+
 
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -45,7 +45,8 @@
 #include <linux/amlogic/media/codec_mm/codec_mm.h>
 #include <linux/amlogic/media/codec_mm/configs.h>
 #include "../utils/firmware.h"
-#include <linux/amlogic/tee.h>
+#include "../utils/secprot.h"
+#include "../utils/config_parser.h"
 
 #define TIME_TASK_PRINT_ENABLE  0x100
 #define PUT_PRINT_ENABLE    0x200
@@ -103,6 +104,7 @@ static const struct vframe_operations_s vh264mvc_vf_provider = {
 
 static struct vframe_provider_s vh264mvc_vf_prov;
 
+static struct vdec_s *vdec = NULL;
 static u32 frame_width, frame_height, frame_dur;
 static u32 saved_resolution;
 static struct timer_list recycle_timer;
@@ -113,6 +115,7 @@ static u32 vh264mvc_ratio;
 static u32 h264mvc_ar;
 static u32 no_dropping_cnt;
 static s32 init_drop_cnt;
+spinlock_t mvc_rp_lock;
 
 #ifdef DEBUG_SKIP
 static unsigned long view_total, view_dropped;
@@ -185,9 +188,11 @@ static s32 vh264mvc_init(void);
 unsigned int DECODE_BUFFER_START = 0x00200000;
 unsigned int DECODE_BUFFER_END = 0x05000000;
 
+/* #define DISPLAY_BUFFER_NUM         4 */
+static unsigned int dynamic_buf_num_margin = 8;
+
 #define DECODE_BUFFER_NUM_MAX    16
-#define DISPLAY_BUFFER_NUM         4
-#define MAX_BMMU_BUFFER_NUM	(DECODE_BUFFER_NUM_MAX + DISPLAY_BUFFER_NUM)
+#define MAX_BMMU_BUFFER_NUM	(DECODE_BUFFER_NUM_MAX + dynamic_buf_num_margin)
 #define TOTAL_BMMU_BUFF_NUM     (MAX_BMMU_BUFFER_NUM * 2 + 3)
 #define VF_BUFFER_IDX(n) (2  + n)
 
@@ -223,8 +228,12 @@ struct buffer_spec_s {
 	unsigned long phy_addr;
 	int alloc_count;
 };
+/*
 static struct buffer_spec_s buffer_spec0[MAX_BMMU_BUFFER_NUM];
 static struct buffer_spec_s buffer_spec1[MAX_BMMU_BUFFER_NUM];
+*/
+static struct buffer_spec_s *buffer_spec0;
+static struct buffer_spec_s *buffer_spec1;
 static void *mm_blk_handle;
 
 /*
@@ -325,14 +334,103 @@ static void set_frame_info(struct vframe_s *vf)
 		/* always stretch to 16:9 */
 		vf->ratio_control |= (0x90 <<
 				DISP_RATIO_ASPECT_RATIO_BIT);
+		vf->sar_height = 1;
+		vf->sar_width = 1;
 	} else {
 		/* h264mvc_ar = ((float)frame_height/frame_width)
 		 *customer_ratio;
 		 */
-		ar =  min_t(u32, h264mvc_ar, DISP_RATIO_ASPECT_RATIO_MAX);
-
-		vf->ratio_control = (ar << DISP_RATIO_ASPECT_RATIO_BIT);
+		switch (h264mvc_ar) {
+		case 1:
+			ar = 0x3ff;
+			vf->sar_height = 1;
+			vf->sar_width = 1;
+			break;
+		case 2:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 12;
+			break;
+		case 3:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 10;
+			break;
+		case 4:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 16;
+			break;
+		case 5:
+			ar = 0x3ff;
+			vf->sar_height = 33;
+			vf->sar_width = 40;
+			break;
+		case 6:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 24;
+			break;
+		case 7:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 20;
+			break;
+		case 8:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 32;
+			break;
+		case 9:
+			ar = 0x3ff;
+			vf->sar_height = 33;
+			vf->sar_width = 80;
+			break;
+		case 10:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 18;
+			break;
+		case 11:
+			ar = 0x3ff;
+			vf->sar_height = 11;
+			vf->sar_width = 15;
+			break;
+		case 12:
+			ar = 0x3ff;
+			vf->sar_height = 33;
+			vf->sar_width = 64;
+			break;
+		case 13:
+			ar = 0x3ff;
+			vf->sar_height = 99;
+			vf->sar_width = 160;
+			break;
+		case 14:
+			ar = 0x3ff;
+			vf->sar_height = 3;
+			vf->sar_width = 4;
+			break;
+		case 15:
+			ar = 0x3ff;
+			vf->sar_height = 2;
+			vf->sar_width = 3;
+			break;
+		case 16:
+			ar = 0x3ff;
+			vf->sar_height = 1;
+			vf->sar_width = 2;
+			break;
+		default:
+			ar = 0x3ff;
+			vf->sar_height = 1;
+			vf->sar_width = 1;
+			break;
+		}
 	}
+	ar =  min_t(u32, ar, DISP_RATIO_ASPECT_RATIO_MAX);
+
+	vf->ratio_control = (ar << DISP_RATIO_ASPECT_RATIO_BIT);
 }
 
 static int vh264mvc_vf_states(struct vframe_states *states, void *op_arg)
@@ -741,7 +839,7 @@ static void do_alloc_work(struct work_struct *work)
 					mb_width, mb_height);
 
 		total_dec_frame_buffering[0] =
-			max_dec_frame_buffering[0] + DISPLAY_BUFFER_NUM;
+			max_dec_frame_buffering[0] + dynamic_buf_num_margin;
 
 		mb_width = (mb_width + 3) & 0xfffffffc;
 		mb_height = (mb_height + 3) & 0xfffffffc;
@@ -822,7 +920,7 @@ static void do_alloc_work(struct work_struct *work)
 		}
 
 		total_dec_frame_buffering[1] =
-			max_dec_frame_buffering[1] + DISPLAY_BUFFER_NUM;
+			max_dec_frame_buffering[1] + dynamic_buf_num_margin;
 
 		mb_width = (mb_width + 3) & 0xfffffffc;
 		mb_height = (mb_height + 3) & 0xfffffffc;
@@ -880,6 +978,14 @@ static void do_alloc_work(struct work_struct *work)
 
 }
 
+static void mvc_set_rp(void) {
+	unsigned long flags;
+
+	spin_lock_irqsave(&mvc_rp_lock, flags);
+	STBUF_WRITE(&vdec->vbuf, set_rp,
+		READ_VREG(VLD_MEM_VIFIFO_RP));
+	spin_unlock_irqrestore(&mvc_rp_lock, flags);
+}
 
 #ifdef HANDLE_h264mvc_IRQ
 static irqreturn_t vh264mvc_isr(int irq, void *dev_id)
@@ -893,6 +999,9 @@ static void vh264mvc_isr(void)
 	u64 pts_us64;
 	u32 frame_size;
 	int ret = READ_VREG(MAILBOX_COMMAND);
+
+	mvc_set_rp();
+
 	/* pr_info("vh264mvc_isr, cmd =%x\n", ret); */
 	switch (ret & 0xff) {
 	case CMD_ALLOC_VIEW_0:
@@ -1084,6 +1193,8 @@ static void vh264mvc_put_timer_func(unsigned long arg)
 	struct timer_list *timer = (struct timer_list *)arg;
 
 	int valid_frame = 0;
+
+	mvc_set_rp();
 
 	if (enable_recycle == 0) {
 		if (dbg_mode & TIME_TASK_PRINT_ENABLE) {
@@ -1324,6 +1435,7 @@ static void vh264mvc_prot_init(void)
 	WRITE_VREG(BUFFER_RECYCLE, 0);
 	WRITE_VREG(DROP_CONTROL, 0);
 	CLEAR_VREG_MASK(MDEC_PIC_DC_CTRL, 1 << 17);
+	CLEAR_VREG_MASK(MDEC_PIC_DC_CTRL, 1 << 16);
 #if 1				/* /MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON8 */
 	WRITE_VREG(MDEC_PIC_DC_THRESH, 0x404038aa);
 #endif
@@ -1369,6 +1481,7 @@ static int vh264mvc_local_init(void)
 	max_dec_frame_buffering[1] = -1;
 	fill_ptr = get_ptr = put_ptr = putting_ptr = 0;
 	dirty_frame_num = 0;
+
 	for (i = 0; i < DECODE_BUFFER_NUM_MAX; i++) {
 		view0_vfbuf_use[i] = 0;
 		view1_vfbuf_use[i] = 0;
@@ -1412,7 +1525,6 @@ static s32 vh264mvc_init(void)
 {
 	int ret = -1;
 	char *buf = vmalloc(0x1000 * 16);
-
 	if (buf == NULL)
 		return -ENOMEM;
 
@@ -1435,13 +1547,13 @@ static s32 vh264mvc_init(void)
 
 	amvdec_enable();
 
-	if (tee_enabled()) {
+	if (vdec_tee_enabled()) {
 		ret = amvdec_loadmc_ex(VFORMAT_H264MVC, NULL, buf);
 		if (ret != 0) {
 			amvdec_disable();
 			vfree(buf);
 			pr_err("H264_MVC: the %s fw loading failed, err: %x\n",
-				tee_enabled() ? "TEE" : "local", ret);
+				vdec_tee_enabled() ? "TEE" : "local", ret);
 			return -1;
 		}
 	} else {
@@ -1582,6 +1694,7 @@ static void error_do_work(struct work_struct *work)
 static int amvdec_h264mvc_probe(struct platform_device *pdev)
 {
 	struct vdec_s *pdata = *(struct vdec_s **)pdev->dev.platform_data;
+	int config_val = 0;
 
 	pr_info("amvdec_h264mvc probe start.\n");
 	mutex_lock(&vh264_mvc_mutex);
@@ -1603,19 +1716,37 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
 	if (pdata->sys_info)
 		vh264mvc_amstream_dec_info = *pdata->sys_info;
 
+	if (pdata->config_len) {
+		pr_info("pdata->config: %s\n", pdata->config);
+		if (get_config_int(pdata->config, "parm_v4l_buffer_margin",
+			&config_val) == 0)
+			dynamic_buf_num_margin = config_val;
+	}
+
 	pdata->dec_status = vh264mvc_dec_status;
 	/* pdata->set_trickmode = vh264mvc_set_trickmode; */
+
+	buffer_spec0 = (struct buffer_spec_s *)vzalloc(
+		sizeof(struct buffer_spec_s) * MAX_BMMU_BUFFER_NUM * 2);
+	if (NULL == buffer_spec0)
+		return -ENOMEM;
+	buffer_spec1 = &buffer_spec0[MAX_BMMU_BUFFER_NUM];
 
 	if (vh264mvc_init() < 0) {
 		pr_info("\namvdec_h264mvc init failed.\n");
 		kfree(gvs);
 		gvs = NULL;
+		vfree(buffer_spec0);
+		buffer_spec0 = NULL;
 		mutex_unlock(&vh264_mvc_mutex);
 		return -ENODEV;
 	}
 
 	INIT_WORK(&error_wd_work, error_do_work);
 	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
+	spin_lock_init(&mvc_rp_lock);
+
+	vdec = pdata;
 
 	atomic_set(&vh264mvc_active, 1);
 
@@ -1649,6 +1780,8 @@ static int amvdec_h264mvc_remove(struct platform_device *pdev)
 #ifdef DEBUG_SKIP
 	pr_info("view_total = %ld, dropped %ld\n", view_total, view_dropped);
 #endif
+	vfree(buffer_spec0);
+	buffer_spec0 = NULL;
 	kfree(gvs);
 	gvs = NULL;
 
@@ -1733,6 +1866,9 @@ MODULE_PARM_DESC(stat, "\n amvdec_h264mvc stat\n");
 
 module_param(dbg_mode, uint, 0664);
 MODULE_PARM_DESC(dbg_mode, "\n amvdec_h264mvc dbg mode\n");
+
+module_param(dynamic_buf_num_margin, uint, 0664);
+MODULE_PARM_DESC(dynamic_buf_num_margin, "\n amvdec_h264mvc dynamic_buf_num_margin\n");
 
 module_param(view_mode, uint, 0664);
 MODULE_PARM_DESC(view_mode, "\n amvdec_h264mvc view mode\n");

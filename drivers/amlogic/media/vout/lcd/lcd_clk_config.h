@@ -92,6 +92,9 @@ struct lcd_clk_data_s {
 	void (*clk_config_init_print)(void);
 	void (*prbs_clk_config)(unsigned int prbs_mode);
 	int (*clk_config_print)(char *buf, int offset);
+
+	int ppm;
+	void (*clk_finetune)(struct lcd_config_s *pconf, int ppm);
 };
 
 struct lcd_clk_config_s { /* unit: kHz */
@@ -123,6 +126,7 @@ struct lcd_clk_config_s { /* unit: kHz */
 	unsigned int err_fmin;
 
 	struct lcd_clk_data_s *data;
+	int ppm_adj;
 };
 
 struct lcd_clktree_s {
@@ -153,6 +157,7 @@ extern void lcd_pll_reset(void);
 extern int lcd_get_ss(char *buf);
 extern int lcd_set_ss(unsigned int level, unsigned int freq, unsigned int mode);
 extern void lcd_clk_update(struct lcd_config_s *pconf);
+void lcd_clk_finetune(struct lcd_config_s *pconf, int ppm);
 extern void lcd_clk_set(struct lcd_config_s *pconf);
 extern void lcd_clk_disable(void);
 extern void lcd_clk_generate_parameter(struct lcd_config_s *pconf);

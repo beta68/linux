@@ -22,7 +22,8 @@
 
 #include <linux/amlogic/media/utils/vformat.h>
 #include <linux/amlogic/media/utils/amstream.h>
-#include "../stream_input/parser/streambuf.h"
+#include "../stream_input/amports/streambuf.h"
+#include "../frame_provider/decoder/utils/vdec_input.h"
 #include "aml_vcodec_drv.h"
 
 struct aml_vdec_adapt {
@@ -38,6 +39,7 @@ struct aml_vdec_adapt {
 	struct vdec_s *vdec;
 	struct stream_port_s port;
 	struct dec_sysinfo dec_prop;
+	struct v4l2_config_parm config;
 	int video_type;
 	char *recv_name;
 	int vfm_path;
@@ -53,11 +55,17 @@ int vdec_vbuf_write(struct aml_vdec_adapt *ada_ctx,
 int vdec_vframe_write(struct aml_vdec_adapt *ada_ctx,
 	const char *buf, unsigned int count, u64 timestamp);
 
-int is_need_to_buf(struct aml_vdec_adapt *ada_ctx);
+void vdec_vframe_input_free(void *priv, u32 handle);
+
+int vdec_vframe_write_with_dma(struct aml_vdec_adapt *ada_ctx,
+	ulong addr, u32 count, u64 timestamp, u32 handle,
+	chunk_free free, void *priv);
+
+bool vdec_input_full(struct aml_vdec_adapt *ada_ctx);
 
 void aml_decoder_flush(struct aml_vdec_adapt *ada_ctx);
 
-int aml_codec_reset(struct aml_vdec_adapt *ada_ctx);
+int aml_codec_reset(struct aml_vdec_adapt *ada_ctx, int *flag);
 
 extern void dump_write(const char __user *buf, size_t count);
 

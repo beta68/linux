@@ -41,8 +41,8 @@
 #include <linux/amlogic/media/utils/vdec_reg.h>
 #include "../utils/amvdec.h"
 
-#include "../../../stream_input/parser/streambuf.h"
-#include "../../../stream_input/parser/streambuf_reg.h"
+#include "../../../stream_input/amports/streambuf.h"
+#include "../../../stream_input/amports/streambuf_reg.h"
 #include "../../../stream_input/parser/rmparser.h"
 
 #include "vreal.h"
@@ -52,7 +52,7 @@
 #include <linux/amlogic/media/codec_mm/codec_mm.h>
 #include <linux/amlogic/media/codec_mm/configs.h>
 #include "../utils/firmware.h"
-#include <linux/amlogic/tee.h>
+#include "../utils/secprot.h"
 
 
 
@@ -866,7 +866,7 @@ s32 vreal_init(struct vdec_s *vdec)
 		amvdec_disable();
 		vfree(buf);
 		pr_err("%s: the %s fw loading failed, err: %x\n",
-			fw_name, tee_enabled() ? "TEE" : "local", ret);
+			fw_name, vdec_tee_enabled() ? "TEE" : "local", ret);
 		return -EBUSY;
 	}
 
@@ -946,12 +946,12 @@ static int amvdec_real_probe(struct platform_device *pdev)
 	pdata->set_isreset = vreal_set_isreset;
 	is_reset = 0;
 
+	INIT_WORK(&set_clk_work, vreal_set_clk);
 	if (vreal_init(pdata) < 0) {
 		pr_info("amvdec_real init failed.\n");
 		pdata->dec_status = NULL;
 		return -ENODEV;
 	}
-	INIT_WORK(&set_clk_work, vreal_set_clk);
 	return 0;
 }
 

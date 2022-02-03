@@ -47,6 +47,8 @@
 #include <linux/highmem.h>
 #include <linux/page-flags.h>
 #include <linux/vmalloc.h>
+#include <linux/amlogic/tee.h>
+#include <linux/amlogic/cpu_version.h>
 
 #define TVP_POOL_NAME "TVP_POOL"
 #define CMA_RES_POOL_NAME "CMA_RES"
@@ -54,12 +56,13 @@
 #define CONFIG_PATH "media.codec_mm"
 #define CONFIG_PREFIX "media"
 
-#define MM_ALIGN_DOWN(addr, size)  ((addr) & (~((size) - 1)))
+#define MM_ALIGN_DOWN_2N(addr, alg2n)  ((addr) & (~((1 << (alg2n)) - 1)))
 #define MM_ALIGN_UP2N(addr, alg2n) ((addr+(1<<alg2n)-1)&(~((1<<alg2n)-1)))
 
 #define RES_IS_MAPED
-#define DEFAULT_TVP_SIZE_FOR_4K (192 * SZ_1M)
+#define DEFAULT_TVP_SIZE_FOR_4K (236 * SZ_1M)
 #define DEFAULT_TVP_SIZE_FOR_NO4K (160 * SZ_1M)
+#define DEFAULT_TVP_SEGMENT_MIN_SIZE (16 * SZ_1M)
 
 #define ALLOC_MAX_RETRY 1
 
@@ -109,11 +112,28 @@ u32 codec_mm_get_keep_debug_mode(void)
 }
 EXPORT_SYMBOL(codec_mm_get_keep_debug_mode);
 
-static int default_tvp_size;
-static int default_tvp_4k_size;
-static int default_cma_res_size;
+static u32 default_tvp_size;
+static u32 default_tvp_4k_size;
+static u32 default_cma_res_size;
+static u32 default_tvp_pool_segment_size[4];
+static u32 default_tvp_4k_pool_segment_size[4];
+static u32 default_tvp_pool_size_0;
+static u32 default_tvp_pool_size_1;
+static u32 default_tvp_pool_size_2;
+static u32 default_tvp_4k_pool_size_0;
+static u32 default_tvp_4k_pool_size_1;
+static u32 default_tvp_4k_pool_size_2;
+static u32 tvp_dynamic_increase_disable;
 
+#define TVP_POOL_SEGMENT_MAX_USED 4
+#define TVP_POOL_SEGMENT_USED_NORMAL 3
 #define TVP_MAX_SLOT 8
+/*
+ *tvp_mode == 0 means protect secure memory in secmem ta
+ *tvp_mode == 1 means use protect secure memory in codec_mm
+ */
+static u32 tvp_mode;
+
 struct extpool_mgt_s {
 	struct gen_pool *gen_pool[TVP_MAX_SLOT];
 	struct codec_mm_s *mm[TVP_MAX_SLOT];
@@ -154,6 +174,9 @@ struct codec_mm_mgt_s {
 	/*1:for 1080p,2:for 4k */
 	int fastplay_enable;
 	spinlock_t lock;
+	atomic_t tvp_user_count;
+	/* for tvp operator used */
+	struct mutex tvp_protect_lock;
 };
 
 #define PHY_OFF() offsetof(struct codec_mm_s, phy_addr)
@@ -161,13 +184,31 @@ struct codec_mm_mgt_s {
 #define VADDR_OFF() offsetof(struct codec_mm_s, vbuffer)
 #define VAL_OFF_VAL(mem, off) (*(unsigned long *)((unsigned long)(mem) + off))
 
+static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool);
+static int codec_mm_tvp_pool_alloc_by_slot(struct extpool_mgt_s *tvp_pool,
+	int memflags, int flags);
+static int codec_mm_tvp_pool_unprotect_and_release(
+	struct extpool_mgt_s *tvp_pool);
+
 static struct codec_mm_mgt_s *get_mem_mgt(void)
 {
 	static struct codec_mm_mgt_s mgt;
 	static int inited;
+	int ret = 0;
+	int handle = 0;
 
 	if (!inited) {
 		memset(&mgt, 0, sizeof(struct codec_mm_mgt_s));
+		/*If tee_protect_tvp_mem is not implement
+		 *will return 0xFFFFFFF we used to init use
+		 *which mode
+		 */
+		ret = tee_protect_tvp_mem(0, 0, &handle);
+		if (ret == 0xFFFFFFFF)
+			tvp_mode = 0;
+		else
+			tvp_mode = 1;
+		mutex_init(&mgt.tvp_protect_lock);
 		inited++;
 	}
 	return &mgt;
@@ -221,6 +262,18 @@ static int codec_mm_valid_mm_locked(struct codec_mm_s *mmhandle)
 	return have_found;
 }
 
+static int codec_mm_alloc_tvp_pre_check_in(
+	struct codec_mm_mgt_s *mgt, int need_size, int flags)
+{
+	struct extpool_mgt_s *tvp_pool = &mgt->tvp_pool;
+	int i = 0;
+
+	for (i = 0; i < tvp_pool->slot_num; i++) {
+		if (gen_pool_avail(tvp_pool->gen_pool[i]) >= need_size)
+			return 1;
+	}
+	return 0;
+}
 
 /*
  *have_space:
@@ -249,12 +302,35 @@ static int codec_mm_alloc_pre_check_in(
 
 	if (aligned_size / PAGE_SIZE <= mgt->alloc_from_sys_pages_max)
 		have_space |= 4;
-	if (aligned_size <= mgt->tvp_pool.total_size -
-		mgt->tvp_pool.alloced_size)
-		have_space |= 8;
-
-	if (flags & 1)
-		have_space = have_space & 8;
+	if (tvp_dynamic_increase_disable) {
+		if (aligned_size <= mgt->tvp_pool.total_size -
+			mgt->tvp_pool.alloced_size)
+			have_space |= 8;
+	} else {
+		if (flags & CODEC_MM_FLAGS_TVP) {
+			if (codec_mm_alloc_tvp_pre_check_in(mgt, aligned_size,
+				flags)) {
+				have_space |= 8;
+			} else {
+				do {
+					if (codec_mm_tvp_pool_alloc_by_slot(
+						&mgt->tvp_pool, 0,
+						mgt->tvp_enable) == 0) {
+						pr_err("no more memory can be alloc %d",
+							mgt->tvp_enable);
+						break;
+					}
+					if (codec_mm_alloc_tvp_pre_check_in(mgt,
+						aligned_size,
+						flags)) {
+						have_space |= 8;
+						break;
+					}
+				} while (mgt->tvp_pool.slot_num
+					<= TVP_POOL_SEGMENT_MAX_USED);
+			}
+		}
+	}
 
 	if (debug_mode & 0xf) {
 		have_space = have_space & (~(debug_mode & 1));
@@ -443,6 +519,26 @@ static void *codec_mm_map_phyaddr(struct codec_mm_s *mem)
 	return vaddr;
 }
 
+int codec_mm_add_release_callback(
+	struct codec_mm_s *mem, struct codec_mm_cb_s *cb)
+{
+	unsigned long flags;
+
+	if (!mem || !cb)
+		return -EINVAL;
+
+	spin_lock_irqsave(&mem->lock, flags);
+
+	if (cb->func)
+		list_add_tail(&cb->node, &mem->release_cb_list);
+	else
+		INIT_LIST_HEAD(&cb->node);
+	spin_unlock_irqrestore(&mem->lock, flags);
+
+	return 0;
+}
+EXPORT_SYMBOL(codec_mm_add_release_callback);
+
 static int codec_mm_alloc_in(
 	struct codec_mm_mgt_s *mgt, struct codec_mm_s *mem)
 {
@@ -478,7 +574,8 @@ static int codec_mm_alloc_in(
 		can_from_cma = 0;
 	}
 
-	have_space = codec_mm_alloc_pre_check_in(mgt, mem->buffer_size, 0);
+	have_space = codec_mm_alloc_pre_check_in(mgt, mem->buffer_size,
+		mem->flags);
 	if (!have_space)
 		return -10001;
 
@@ -618,18 +715,49 @@ static int codec_mm_alloc_in(
 			int aligned_buffer_size = ALIGN(mem->buffer_size,
 					(1 << RESERVE_MM_ALIGNED_2N));
 			alloc_trace_mask |= 1 << 5;
-			mem->mem_handle = (void *)codec_mm_extpool_alloc(
+			if (tvp_dynamic_increase_disable) {
+				mem->mem_handle =
+				(void *)codec_mm_extpool_alloc(
 					&mgt->tvp_pool,
 					&mem->from_ext,
 					aligned_buffer_size);
-			mem->from_flags =
-				AMPORTS_MEM_FLAGS_FROM_GET_FROM_TVP;
-			if (mem->mem_handle) {
-				/*no vaddr for TVP MEMORY */
-				mem->vbuffer = NULL;
-				mem->phy_addr = (unsigned long)mem->mem_handle;
-				mem->buffer_size = aligned_buffer_size;
-				break;
+				mem->from_flags =
+					AMPORTS_MEM_FLAGS_FROM_GET_FROM_TVP;
+				if (mem->mem_handle) {
+					/*no vaddr for TVP MEMORY */
+					mem->vbuffer = NULL;
+					mem->phy_addr =
+						(unsigned long)mem->mem_handle;
+					mem->buffer_size = aligned_buffer_size;
+					break;
+				}
+			} else {
+				do {
+					mem->mem_handle =
+					(void *)codec_mm_extpool_alloc(
+						&mgt->tvp_pool,
+						&mem->from_ext,
+						aligned_buffer_size);
+					if (mem->mem_handle) {
+						/*no vaddr for TVP MEMORY */
+						mem->from_flags =
+					AMPORTS_MEM_FLAGS_FROM_GET_FROM_TVP;
+						mem->vbuffer = NULL;
+						mem->phy_addr = (unsigned long)
+							mem->mem_handle;
+						mem->buffer_size =
+							aligned_buffer_size;
+						break;
+					}
+					if (codec_mm_tvp_pool_alloc_by_slot(
+						&mgt->tvp_pool, 0,
+						mgt->tvp_enable) == 0) {
+						pr_err("no more memory can be alloc %d",
+							mgt->tvp_enable);
+						break;
+					}
+				} while (mgt->tvp_pool.slot_num <=
+					TVP_POOL_SEGMENT_MAX_USED);
 			}
 		}
 
@@ -677,6 +805,7 @@ static void codec_mm_free_in(struct codec_mm_mgt_s *mgt,
 		struct codec_mm_s *mem)
 {
 	unsigned long flags;
+
 	if (mem->from_flags == AMPORTS_MEM_FLAGS_FROM_GET_FROM_CMA) {
 		if (mem->flags & CODEC_MM_FLAGS_FOR_PHYS_VMAPED)
 			codec_mm_unmap_phyaddr(mem->vbuffer);
@@ -729,6 +858,18 @@ static void codec_mm_free_in(struct codec_mm_mgt_s *mgt,
 	}
 
 	spin_unlock_irqrestore(&mgt->lock, flags);
+	if ((mem->from_flags == AMPORTS_MEM_FLAGS_FROM_GET_FROM_TVP) &&
+		(tvp_mode >= 1)) {
+		mutex_lock(&mgt->tvp_protect_lock);
+		if (atomic_read(&mgt->tvp_user_count) == 0) {
+			if (codec_mm_tvp_pool_unprotect_and_release(
+				&mgt->tvp_pool) == 0) {
+				mgt->tvp_enable = 0;
+				pr_info("disalbe tvp\n");
+			}
+		}
+		mutex_unlock(&mgt->tvp_protect_lock);
+	}
 
 	return;
 }
@@ -771,6 +912,7 @@ struct codec_mm_s *codec_mm_alloc(const char *owner, int size,
 	mem->page_count = count;
 	mem->align2n = align2n;
 	mem->flags = memflags;
+	INIT_LIST_HEAD(&mem->release_cb_list);
 	ret = codec_mm_alloc_in(mgt, mem);
 	if (ret < 0 &&
 		mgt->alloced_for_sc_cnt > 0 && /*have used for scatter.*/
@@ -778,7 +920,10 @@ struct codec_mm_s *codec_mm_alloc(const char *owner, int size,
 		/*if not scatter, free scatter caches. */
 		pr_err(" No mem ret=%d, clear scatter cache!!\n", ret);
 		dump_free_mem_infos(NULL, 0);
-		codec_mm_scatter_free_all_ignorecache(1);
+		if (memflags & CODEC_MM_FLAGS_TVP)
+			codec_mm_scatter_free_all_ignorecache(2);
+		else
+			codec_mm_scatter_free_all_ignorecache(1);
 		ret = codec_mm_alloc_in(mgt, mem);
 	}
 	if (ret < 0) {
@@ -874,7 +1019,13 @@ void codec_mm_release(struct codec_mm_s *mem, const char *owner)
 			mem->from_flags, index);
 	mem->owner[index] = NULL;
 	if (index == 0) {
+		struct codec_mm_cb_s *cur, *tmp;
 		list_del(&mem->list);
+		list_for_each_entry_safe(cur,
+			tmp, &mem->release_cb_list, node) {
+			list_del_init(&cur->node);
+			cur->func(mem, cur);
+		}
 		spin_unlock_irqrestore(&mgt->lock, flags);
 		codec_mm_free_in(mgt, mem);
 		kfree(mem);
@@ -884,23 +1035,117 @@ void codec_mm_release(struct codec_mm_s *mem, const char *owner)
 }
 EXPORT_SYMBOL(codec_mm_release);
 
-void *codec_mm_dma_alloc_coherent(const char *owner, int size,
-	dma_addr_t *dma_handle, gfp_t flag, int memflags)
+void *codec_mm_dma_alloc_coherent(ulong *handle,
+				  ulong *phy_out,
+				  int size,
+				  const char *owner)
 {
 	struct codec_mm_mgt_s *mgt = get_mem_mgt();
-	void *addr = NULL;
+	struct codec_mm_s *mem = NULL;
+	void *vaddr = NULL;
+	int space, s_res, s_cma, s_sys;
+	dma_addr_t dma_handle;
+	int buf_size = PAGE_ALIGN(size);
+	ulong flags;
 
-	addr = dma_alloc_coherent(mgt->dev, size, dma_handle, flag);
-	return addr;
+	vaddr = dma_alloc_coherent(mgt->dev, buf_size, &dma_handle, GFP_KERNEL);
+	if (!vaddr)
+		goto err;
+
+	mem = kzalloc(sizeof(*mem), GFP_KERNEL);
+	if (!mem)
+		goto err;
+
+	mem->owner[0]	= owner;
+	mem->vbuffer	= vaddr;
+	mem->phy_addr	= dma_handle;
+	mem->buffer_size = buf_size;
+	mem->from_flags	= AMPORTS_MEM_FLAGS_FROM_GET_FROM_COHERENT;
+
+	space = codec_mm_alloc_pre_check_in(mgt, mem->buffer_size, 0);
+	if (!space)
+		goto err;
+
+	s_res = (space & 1);
+	s_cma = (space & 2);
+	s_sys = (space & 4);
+	if (!s_res && !s_cma && !s_sys) {
+		if (debug_mode & 0x20)
+			pr_err("error, codec mm have space: %x\n", space);
+		goto err;
+	}
+	mem->flags = space;
+
+	spin_lock_irqsave(&mgt->lock, flags);
+
+	mem->mem_id = mgt->global_memid++;
+	if (s_cma) {
+		mgt->alloced_cma_size	+= buf_size;
+	} else if (s_res) {
+		if (mgt->cma_res_pool.total_size > 0)
+			mgt->cma_res_pool.total_size += buf_size;
+		else
+			mgt->alloced_res_size += buf_size;
+	} else {
+		mgt->alloced_sys_size	+= buf_size;
+	}
+	mgt->alloced_from_coherent	+= buf_size;
+	mgt->total_alloced_size		+= buf_size;
+	*handle				= (ulong)mem;
+	*phy_out			= mem->phy_addr;
+	list_add_tail(&mem->list, &mgt->mem_list);
+
+	spin_unlock_irqrestore(&mgt->lock, flags);
+
+	if (debug_mode & 0x20) {
+		pr_info("[%s] alloc coherent mem (phy %lx, vddr %px) size (%d).\n",
+			owner, mem->phy_addr, vaddr, buf_size);
+	}
+	return vaddr;
+err:
+	if (vaddr)
+		dma_free_coherent(mgt->dev, buf_size, vaddr, dma_handle);
+
+	return NULL;
 }
 EXPORT_SYMBOL(codec_mm_dma_alloc_coherent);
 
-void codec_mm_dma_free_coherent(const char *owner, int size,
-	void *cpu_addr, dma_addr_t dma_handle, int memflags)
+void codec_mm_dma_free_coherent(ulong handle)
 {
 	struct codec_mm_mgt_s *mgt = get_mem_mgt();
+	struct codec_mm_s *mem = (struct codec_mm_s *)handle;
+	ulong flags;
 
-	dma_free_coherent(mgt->dev, size, cpu_addr, dma_handle);
+	if (!handle)
+		return;
+
+	dma_free_coherent(mgt->dev, mem->buffer_size,
+		mem->vbuffer, mem->phy_addr);
+
+	spin_lock_irqsave(&mgt->lock, flags);
+
+	if (mem->flags & 2)
+		mgt->alloced_cma_size	-= mem->buffer_size;
+	else if (mem->flags & 1)
+		if (mgt->cma_res_pool.total_size > 0)
+			mgt->cma_res_pool.total_size += mem->buffer_size;
+		else
+			mgt->alloced_res_size += mem->buffer_size;
+	else
+		mgt->alloced_sys_size	-= mem->buffer_size;
+	mgt->alloced_from_coherent	-= mem->buffer_size;
+	mgt->total_alloced_size		-= mem->buffer_size;
+	list_del(&mem->list);
+
+	spin_unlock_irqrestore(&mgt->lock, flags);
+
+	if (debug_mode & 0x20) {
+		pr_info("[%s] free coherent mem (phy %lx, vddr %px) size (%d)\n",
+			mem->owner[0], mem->phy_addr, mem->vbuffer,
+			mem->buffer_size);
+	}
+
+	kfree(mem);
 }
 EXPORT_SYMBOL(codec_mm_dma_free_coherent);
 
@@ -1092,8 +1337,306 @@ static int codec_mm_init_tvp_pool(
 		return -1;
 	}
 	tvp_pool->gen_pool[tvp_pool->slot_num] = pool;
+	mm->tvp_handle = -1;
 	tvp_pool->mm[tvp_pool->slot_num] = mm;
 	return 0;
+}
+
+static int codec_mm_tvp_pool_protect(struct extpool_mgt_s *tvp_pool)
+{
+	int ret = 0;
+	int i = 0;
+
+	for (i = 0; i < tvp_pool->slot_num; i++) {
+		if (tvp_pool->mm[i]->tvp_handle == -1) {
+			ret = tee_protect_tvp_mem(
+				(uint32_t)tvp_pool->mm[i]->phy_addr,
+				(uint32_t)tvp_pool->mm[i]->buffer_size,
+				&tvp_pool->mm[i]->tvp_handle);
+			pr_info("protect tvp %d %d ret %d %x %x\n",
+				i, tvp_pool->mm[i]->tvp_handle, ret,
+				(unsigned int)tvp_pool->mm[i]->phy_addr,
+				(unsigned int)tvp_pool->mm[i]->buffer_size);
+		} else {
+			pr_info("protect tvp %d %d ret %d\n",
+				i, tvp_pool->mm[i]->tvp_handle, ret);
+		}
+	}
+	return ret;
+}
+
+static int codec_mm_extpool_pool_release_inner(int slot_num_start,
+					       struct extpool_mgt_s *tvp_pool)
+{
+	struct codec_mm_mgt_s *mgt = get_mem_mgt();
+	int i;
+
+	for (i = slot_num_start; i < tvp_pool->slot_num; i++) {
+		struct gen_pool *gpool = tvp_pool->gen_pool[i];
+		int slot_mem_size = 0;
+
+		if (gpool) {
+			slot_mem_size = gen_pool_size(gpool);
+			gen_pool_destroy(tvp_pool->gen_pool[i]);
+			if (tvp_pool->mm[i]) {
+				struct page *mm = tvp_pool->mm[i]->mem_handle;
+
+				if (tvp_pool->mm[i]->from_flags ==
+					AMPORTS_MEM_FLAGS_FROM_GET_FROM_CMA_RES)
+					mm = phys_to_page(
+						(unsigned long)mm);
+				cma_mmu_op(mm,
+					   tvp_pool->mm[i]->page_count,
+					   1);
+				codec_mm_release(tvp_pool->mm[i],
+						 TVP_POOL_NAME);
+			}
+		}
+		mgt->tvp_pool.total_size -= slot_mem_size;
+		tvp_pool->gen_pool[i] = NULL;
+		tvp_pool->mm[i] = NULL;
+	}
+	tvp_pool->slot_num = slot_num_start;
+	return slot_num_start;
+}
+
+static int codec_mm_tvp_pool_alloc_by_type(
+	struct extpool_mgt_s *tvp_pool,
+	int size, int memflags, int type)
+{
+	struct codec_mm_s *mem;
+	int ret;
+
+	if (type == CODEC_MM_FLAGS_CMA) {
+		mem = codec_mm_alloc(TVP_POOL_NAME,
+					size,
+					RESERVE_MM_ALIGNED_2N,
+					CODEC_MM_FLAGS_FOR_LOCAL_MGR |
+					CODEC_MM_FLAGS_CMA);
+		if (mem) {
+			struct page *mm = mem->mem_handle;
+
+			if (mem->from_flags ==
+				AMPORTS_MEM_FLAGS_FROM_GET_FROM_CMA_RES)
+				mm = phys_to_page((unsigned long)mm);
+			cma_mmu_op(mm, mem->page_count, 0);
+			ret = codec_mm_init_tvp_pool(tvp_pool, mem);
+			if (ret < 0) {
+				cma_mmu_op(mm, mem->page_count, 1);
+				codec_mm_release(mem, TVP_POOL_NAME);
+			} else {
+				tvp_pool->total_size += size;
+				tvp_pool->slot_num++;
+				if (tvp_mode >= 1) {
+					if (codec_mm_tvp_pool_protect
+					(tvp_pool)) {
+					codec_mm_extpool_pool_release_inner(
+						tvp_pool->slot_num - 1,
+						tvp_pool);
+						return 1;
+					}
+				}
+				return 0;
+			}
+		}
+	} else if (type == CODEC_MM_FLAGS_RESERVED) {
+		mem = codec_mm_alloc(TVP_POOL_NAME,
+				size,
+				RESERVE_MM_ALIGNED_2N,
+				CODEC_MM_FLAGS_FOR_LOCAL_MGR |
+				CODEC_MM_FLAGS_RESERVED);
+
+		if (mem) {
+			ret = codec_mm_init_tvp_pool(
+				tvp_pool, mem);
+			if (ret < 0) {
+				codec_mm_release(mem, TVP_POOL_NAME);
+			} else {
+				tvp_pool->total_size += size;
+				tvp_pool->slot_num++;
+				if (tvp_mode >= 1) {
+					if (codec_mm_tvp_pool_protect
+					(tvp_pool)) {
+					codec_mm_extpool_pool_release_inner(
+							tvp_pool->slot_num - 1,
+							tvp_pool);
+						return 1;
+					}
+				}
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+static int codec_mm_tvp_pool_alloc_by_slot(
+	struct extpool_mgt_s *tvp_pool, int memflags, int flags)
+{
+	struct codec_mm_mgt_s *mgt = get_mem_mgt();
+	int size = 0;
+	int try_alloced_size = 0;
+	int max_reserved_free_size = 0;
+	int max_cma_free_size = 0;
+	int use_cma_pool_first = 0;
+	int retry_cnt = 0;
+	int need_add_size = 0;
+	int needed_total_size = 0;
+	int i = 0;
+
+	mutex_lock(&tvp_pool->pool_lock);
+	max_reserved_free_size = mgt->total_reserved_size
+		- mgt->alloced_res_size;
+	max_cma_free_size = mgt->total_cma_size - mgt->alloced_cma_size;
+	use_cma_pool_first = max_cma_free_size > max_reserved_free_size ? 1 : 0;
+
+	if (flags == 1) {
+		if (tvp_pool->slot_num >= TVP_POOL_SEGMENT_USED_NORMAL) {
+			try_alloced_size = 0;
+			pr_info("slot_num exceed the limit %d\n",
+				tvp_pool->slot_num);
+			goto alloced_finished;
+		}
+		size = default_tvp_pool_segment_size[tvp_pool->slot_num];
+		for (i = 0; i < tvp_pool->slot_num; i++)
+			needed_total_size += default_tvp_pool_segment_size[i];
+	} else {
+		if (tvp_pool->slot_num >= TVP_POOL_SEGMENT_MAX_USED) {
+			try_alloced_size = 0;
+			pr_info("slot_num for 4k exceed the limit %d\n",
+				tvp_pool->slot_num);
+			goto alloced_finished;
+		}
+		size = default_tvp_4k_pool_segment_size[tvp_pool->slot_num];
+		for (i = 0; i < tvp_pool->slot_num; i++)
+			needed_total_size +=
+				default_tvp_4k_pool_segment_size[i];
+	}
+
+	if (needed_total_size > 0) {
+		if (needed_total_size >= tvp_pool->total_size) {
+			need_add_size = needed_total_size
+				- tvp_pool->total_size;
+		} else {
+			pr_info("have alloc engouth buffer %d %d",
+				needed_total_size, tvp_pool->total_size);
+			try_alloced_size = size;
+			goto alloced_finished;
+		}
+	}
+	size += need_add_size;
+	if (size <= 0) {
+		try_alloced_size = 0;
+		goto alloced_finished;
+	}
+
+	if (use_cma_pool_first) {
+		try_alloced_size = size > max_cma_free_size
+			? max_cma_free_size : size;
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+		retry_cnt = try_alloced_size / (4 * SZ_1M);
+		if (try_alloced_size > 0) {
+			int retry = 0;
+
+			do {
+				if (codec_mm_tvp_pool_alloc_by_type(tvp_pool,
+					try_alloced_size, memflags,
+						CODEC_MM_FLAGS_CMA)) {
+					try_alloced_size = try_alloced_size
+						- 4 * SZ_1M;
+					if (try_alloced_size < 16 * SZ_1M)
+						break;
+					try_alloced_size = MM_ALIGN_UP2N(
+							try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+				} else {
+					goto alloced_finished;
+				}
+			} while (retry++ < retry_cnt);
+		}
+	} else {
+		try_alloced_size = size > max_reserved_free_size
+			? max_reserved_free_size : size;
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+		retry_cnt = try_alloced_size / (4 * SZ_1M);
+		if (try_alloced_size > 0) {
+			int retry = 0;
+
+			do {
+				if (codec_mm_tvp_pool_alloc_by_type(tvp_pool,
+					try_alloced_size, memflags,
+						CODEC_MM_FLAGS_RESERVED)) {
+					try_alloced_size = try_alloced_size
+						- 4 * SZ_1M;
+					if (try_alloced_size < 16 * SZ_1M)
+						break;
+					try_alloced_size = MM_ALIGN_UP2N(
+							try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+				} else {
+					goto alloced_finished;
+				}
+			} while (retry++ < retry_cnt);
+		}
+	}
+
+	if (use_cma_pool_first) {
+		try_alloced_size = size > max_reserved_free_size
+			? max_reserved_free_size : size;
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+		retry_cnt = try_alloced_size / (4 * SZ_1M);
+		if (try_alloced_size > 0) {
+			int retry = 0;
+
+			do {
+				if (codec_mm_tvp_pool_alloc_by_type(tvp_pool,
+					try_alloced_size, memflags,
+						CODEC_MM_FLAGS_RESERVED)) {
+					try_alloced_size = try_alloced_size
+						- 4 * SZ_1M;
+					if (try_alloced_size < 16 * SZ_1M)
+						break;
+					try_alloced_size = MM_ALIGN_UP2N(
+							try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+				} else {
+					goto alloced_finished;
+				}
+			} while (retry++ < retry_cnt);
+		}
+	} else {
+		try_alloced_size = size > max_cma_free_size
+			? max_cma_free_size : size;
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+		retry_cnt = try_alloced_size / (4 * SZ_1M);
+		if (try_alloced_size > 0) {
+			int retry = 0;
+
+			do {
+				if (codec_mm_tvp_pool_alloc_by_type(tvp_pool,
+					try_alloced_size, memflags,
+					CODEC_MM_FLAGS_CMA)) {
+					try_alloced_size = try_alloced_size
+						- 4 * SZ_1M;
+					if (try_alloced_size < 16 * SZ_1M)
+						break;
+					try_alloced_size = MM_ALIGN_UP2N(
+							try_alloced_size,
+							RESERVE_MM_ALIGNED_2N);
+				} else {
+					goto alloced_finished;
+				}
+			} while (retry++ < retry_cnt);
+		}
+	}
+	try_alloced_size = 0;
+alloced_finished:
+	mutex_unlock(&tvp_pool->pool_lock);
+	return try_alloced_size;
 }
 
 int codec_mm_extpool_pool_alloc(
@@ -1105,15 +1648,19 @@ int codec_mm_extpool_pool_alloc(
 	int alloced_size = tvp_pool->total_size;
 	int try_alloced_size = size;
 	int ret;
+	int retry_cnt = size / (4 * SZ_1M);
+	int slot_num = tvp_pool->slot_num;
 
-/*alloced from reserved*/
+	/*alloced from reserved*/
 	mutex_lock(&tvp_pool->pool_lock);
+	if (alloced_size >= size)
+		goto alloced_finished1;
 	try_alloced_size = mgt->total_reserved_size - mgt->alloced_res_size;
 	if (try_alloced_size > 0 && for_tvp) {
 		int retry = 0;
 		try_alloced_size = min_t(int,
 			size - alloced_size, try_alloced_size);
-		try_alloced_size = MM_ALIGN_DOWN(try_alloced_size,
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
 			RESERVE_MM_ALIGNED_2N);
 		do {
 			mem = codec_mm_alloc(TVP_POOL_NAME,
@@ -1132,15 +1679,24 @@ int codec_mm_extpool_pool_alloc(
 					alloced_size += try_alloced_size;
 					tvp_pool->slot_num++;
 				}
-				break;
+				try_alloced_size = size - alloced_size;
 			} else {
 				try_alloced_size = try_alloced_size - 4 * SZ_1M;
 				if (try_alloced_size < 16 * SZ_1M)
 					break;
 			}
-		} while (retry++ < 10);
+			if (tvp_pool->slot_num < TVP_POOL_SEGMENT_USED_NORMAL &&
+			    alloced_size < size) {
+				try_alloced_size = MM_ALIGN_UP2N(
+					try_alloced_size,
+					RESERVE_MM_ALIGNED_2N);
+			} else {
+				break;
+			}
+		} while (retry++ < retry_cnt);
 	}
-	if (alloced_size >= size) {
+	if (alloced_size >= size || tvp_pool->slot_num >=
+		TVP_POOL_SEGMENT_USED_NORMAL) {
 		/*alloc finished. */
 		goto alloced_finished;
 	}
@@ -1152,7 +1708,7 @@ int codec_mm_extpool_pool_alloc(
 
 		try_alloced_size = min_t(int,
 			size - alloced_size, try_alloced_size);
-		try_alloced_size = MM_ALIGN_DOWN(try_alloced_size,
+		try_alloced_size = MM_ALIGN_DOWN_2N(try_alloced_size,
 			RESERVE_MM_ALIGNED_2N);
 		do {
 			mem = codec_mm_alloc(
@@ -1189,18 +1745,42 @@ int codec_mm_extpool_pool_alloc(
 					alloced_size += try_alloced_size;
 					tvp_pool->slot_num++;
 				}
-				break;
+				try_alloced_size = size - alloced_size;
 			} else {
 				try_alloced_size = try_alloced_size - 4 * SZ_1M;
 				if (try_alloced_size < 16 * SZ_1M)
 					break;
 			}
-		} while (retry++ < 10);
+			if (tvp_pool->slot_num < TVP_POOL_SEGMENT_USED_NORMAL &&
+			    alloced_size < size) {
+				try_alloced_size = MM_ALIGN_UP2N(
+					try_alloced_size,
+					RESERVE_MM_ALIGNED_2N);
+			} else {
+				break;
+			}
+		} while (retry++ < retry_cnt);
 	}
 
 alloced_finished:
 	if (alloced_size > 0)
 		tvp_pool->total_size = alloced_size;
+	if (for_tvp) {
+		if (alloced_size >= size) {
+			if (tvp_mode >= 1) {
+				if (codec_mm_tvp_pool_protect(tvp_pool)) {
+					codec_mm_extpool_pool_release_inner(
+						slot_num, tvp_pool);
+					alloced_size = 0;
+				}
+			}
+		} else {
+			codec_mm_extpool_pool_release_inner(
+						slot_num, tvp_pool);
+			alloced_size = 0;
+		}
+	}
+alloced_finished1:
 	mutex_unlock(&tvp_pool->pool_lock);
 	return alloced_size;
 }
@@ -1214,7 +1794,6 @@ EXPORT_SYMBOL(codec_mm_extpool_pool_alloc);
  */
 static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool)
 {
-	struct codec_mm_mgt_s *mgt = get_mem_mgt();
 	int i;
 	int ignored = 0;
 	mutex_lock(&tvp_pool->pool_lock);
@@ -1224,7 +1803,7 @@ static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool)
 
 		if (gpool) {
 			if (gen_pool_avail(gpool) != gen_pool_size(gpool)) {
-				pr_err("ERROR: TVP pool is not free.\n");
+				pr_err("ext pool is not free.\n");
 				ignored++;
 				continue;	/*ignore this free now, */
 			}
@@ -1244,7 +1823,7 @@ static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool)
 					TVP_POOL_NAME);
 			}
 		}
-		mgt->tvp_pool.total_size -= slot_mem_size;
+		tvp_pool->total_size -= slot_mem_size;
 		tvp_pool->gen_pool[i] = NULL;
 		tvp_pool->mm[i] = NULL;
 	}
@@ -1257,8 +1836,6 @@ static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool)
 					tvp_pool->gen_pool[i];
 				tvp_pool->mm[before_free_slot] =
 					tvp_pool->mm[i];
-				tvp_pool->gen_pool[i] = NULL;
-				tvp_pool->mm[i] = NULL;
 				before_free_slot++;
 			}
 			if (!tvp_pool->gen_pool[i] && before_free_slot > i) {
@@ -1267,6 +1844,74 @@ static int codec_mm_extpool_pool_release(struct extpool_mgt_s *tvp_pool)
 			}
 		}
 
+	}
+	tvp_pool->slot_num = ignored;
+	mutex_unlock(&tvp_pool->pool_lock);
+	return ignored;
+}
+
+static int codec_mm_tvp_pool_unprotect_and_release(
+	struct extpool_mgt_s *tvp_pool)
+{
+	int i;
+	int ignored = 0;
+
+	mutex_lock(&tvp_pool->pool_lock);
+	for (i = 0; i < tvp_pool->slot_num; i++) {
+		struct gen_pool *gpool = tvp_pool->gen_pool[i];
+		int slot_mem_size = 0;
+
+		if (gpool) {
+			if (gen_pool_avail(gpool) != gen_pool_size(gpool)) {
+				pr_err("Warn: TVP pool will release later.\n");
+				ignored++;
+				continue;	/*ignore this free now, */
+			}
+			slot_mem_size = gen_pool_size(gpool);
+			gen_pool_destroy(tvp_pool->gen_pool[i]);
+			if (tvp_pool->mm[i]) {
+				struct page *mm = tvp_pool->mm[i]->mem_handle;
+
+				pr_info("unprotect tvp %d handle is %d\n",
+					i, tvp_pool->mm[i]->tvp_handle);
+				if (tvp_pool->mm[i]->tvp_handle > 0) {
+					tee_unprotect_tvp_mem(
+						tvp_pool->mm[i]->tvp_handle);
+					tvp_pool->mm[i]->tvp_handle = -1;
+				}
+				if (tvp_pool->mm[i]->from_flags ==
+					AMPORTS_MEM_FLAGS_FROM_GET_FROM_CMA_RES)
+					mm = phys_to_page(
+						(unsigned long)mm);
+				cma_mmu_op(mm,
+					tvp_pool->mm[i]->page_count,
+					1);
+				codec_mm_release(tvp_pool->mm[i],
+					TVP_POOL_NAME);
+			}
+		}
+		tvp_pool->total_size -= slot_mem_size;
+		tvp_pool->gen_pool[i] = NULL;
+		tvp_pool->mm[i] = NULL;
+	}
+	if (ignored > 0) {
+		int before_free_slot = tvp_pool->slot_num + 1;
+
+		for (i = 0; i < tvp_pool->slot_num; i++) {
+			if (tvp_pool->gen_pool[i] && before_free_slot < i) {
+				tvp_pool->gen_pool[before_free_slot] =
+					tvp_pool->gen_pool[i];
+				tvp_pool->mm[before_free_slot] =
+					tvp_pool->mm[i];
+				tvp_pool->mm[before_free_slot]->tvp_handle =
+					tvp_pool->mm[i]->tvp_handle;
+				before_free_slot++;
+			}
+			if (!tvp_pool->gen_pool[i] && before_free_slot > i) {
+				before_free_slot = i;
+				/**/
+			}
+		}
 	}
 	tvp_pool->slot_num = ignored;
 	mutex_unlock(&tvp_pool->pool_lock);
@@ -1291,7 +1936,7 @@ static int codec_mm_tvp_get_mem_resource(ulong *res, int victor_size)
 	struct codec_mm_mgt_s *mgt = get_mem_mgt();
 	struct extpool_mgt_s *tvp_pool = &mgt->tvp_pool;
 	int i;
-
+	mutex_lock(&tvp_pool->pool_lock);
 	for (i = 0; i < tvp_pool->slot_num && i < victor_size / 2; i++) {
 		if (tvp_pool->mm[i]) {
 			res[2 * i] = tvp_pool->mm[i]->phy_addr;
@@ -1299,6 +1944,7 @@ static int codec_mm_tvp_get_mem_resource(ulong *res, int victor_size)
 				tvp_pool->mm[i]->buffer_size - 1;
 		}
 	}
+	mutex_unlock(&tvp_pool->pool_lock);
 	return i;
 }
 
@@ -1309,6 +1955,7 @@ static int codec_mm_is_in_tvp_region(ulong phy_addr)
 	int i;
 	int in = 0, in2 = 0;
 
+	mutex_lock(&tvp_pool->pool_lock);
 	for (i = 0; i < tvp_pool->slot_num; i++) {
 		if (tvp_pool->mm[i]) {
 			in = tvp_pool->mm[i]->phy_addr <= phy_addr;
@@ -1320,6 +1967,7 @@ static int codec_mm_is_in_tvp_region(ulong phy_addr)
 			in = 0;
 		}
 	}
+	mutex_unlock(&tvp_pool->pool_lock);
 	return in;
 }
 
@@ -1422,11 +2070,12 @@ static int dump_mem_infos(void *buf, int size)
 	pbuf += s;
 
 	s = snprintf(pbuf, size - tsize,
-		"\tCMA:%d,RES:%d,TVP:%d,SYS:%d,VMAPED:%d MB\n",
+		"\tCMA:%d,RES:%d,TVP:%d,SYS:%d,COHER:%d,VMAPED:%d MB\n",
 		mgt->alloced_cma_size / SZ_1M,
 		mgt->alloced_res_size / SZ_1M,
 		mgt->tvp_pool.alloced_size / SZ_1M,
 		mgt->alloced_sys_size / SZ_1M,
+		mgt->alloced_from_coherent / SZ_1M,
 		(mgt->phys_vmaped_page_cnt << PAGE_SHIFT) / SZ_1M);
 	tsize += s;
 	pbuf += s;
@@ -1507,7 +2156,7 @@ static int dump_mem_infos(void *buf, int size)
 		if (buf) {
 			pbuf += s;
 			if (tsize > size - 256) {
-				s += snprintf(pbuf + s, size - tsize,
+				s = snprintf(pbuf, size - tsize,
 					"\n\t\t**NOT END**\n");
 				tsize += s;
 				break;/*no memory for dump now.*/
@@ -1579,6 +2228,240 @@ static int dump_free_mem_infos(void *buf, int size)
 	kfree(usedb);
 	return 0;
 }
+
+static void codec_mm_tvp_segment_init(void)
+{
+	int size = 0;
+	int segment_size = 0;
+	int rest_size = 0;
+
+	size = default_tvp_pool_size_0 +
+		default_tvp_pool_size_1 + default_tvp_pool_size_2;
+	if (size > default_tvp_size) {
+		default_tvp_pool_size_0 = 0;
+		default_tvp_pool_size_1 = 0;
+		default_tvp_pool_size_2 = 0;
+	}
+
+	if (default_tvp_4k_pool_size_0 < default_tvp_pool_size_0)
+		default_tvp_4k_pool_size_0 = default_tvp_pool_size_0;
+	if (default_tvp_4k_pool_size_1 < default_tvp_pool_size_1)
+		default_tvp_4k_pool_size_1 = default_tvp_pool_size_1;
+	if (default_tvp_4k_pool_size_2 < default_tvp_pool_size_2)
+		default_tvp_4k_pool_size_2 = default_tvp_pool_size_2;
+
+	size = default_tvp_4k_pool_size_0 +
+		default_tvp_4k_pool_size_1 + default_tvp_4k_pool_size_2;
+	if (size > default_tvp_4k_size) {
+		default_tvp_4k_pool_size_0 = 0;
+		default_tvp_4k_pool_size_1 = 0;
+		default_tvp_4k_pool_size_2 = 0;
+	}
+
+	if (default_tvp_4k_size > default_tvp_size) {
+		if (default_tvp_4k_pool_size_0 >=
+			DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[0] =
+				default_tvp_4k_pool_size_0;
+		} else {
+			default_tvp_4k_pool_segment_size[0] =
+				default_tvp_4k_size * 4 / 12;
+		}
+		size = default_tvp_4k_pool_segment_size[0];
+		if (default_tvp_4k_pool_size_1 >=
+			DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[1] =
+				default_tvp_4k_pool_size_1;
+		} else {
+			segment_size = default_tvp_4k_size * 3 / 12;
+			rest_size = default_tvp_4k_size - size;
+			default_tvp_4k_pool_segment_size[1] =
+				(rest_size > segment_size) ?
+					segment_size : rest_size;
+		}
+		size += default_tvp_4k_pool_segment_size[1];
+		if (default_tvp_4k_pool_size_2 >=
+			DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[2] =
+				default_tvp_4k_pool_size_2;
+		} else {
+			segment_size = default_tvp_4k_size * 3 / 12;
+			rest_size = default_tvp_4k_size - size;
+			default_tvp_4k_pool_segment_size[2] =
+				(rest_size > segment_size) ?
+					segment_size : rest_size;
+		}
+		size += default_tvp_4k_pool_segment_size[2];
+		default_tvp_4k_pool_segment_size[3] =
+			default_tvp_4k_size - size;
+
+		if (default_tvp_pool_size_0 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_pool_segment_size[0] =
+				default_tvp_pool_size_0;
+		} else {
+			default_tvp_pool_segment_size[0] =
+				default_tvp_size * 4 / 12;
+		}
+		size = default_tvp_pool_segment_size[0];
+		if (default_tvp_pool_size_1 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_pool_segment_size[1] =
+				default_tvp_pool_size_1;
+		} else {
+			segment_size = default_tvp_size * 3 / 12;
+			rest_size = default_tvp_size - size;
+			default_tvp_pool_segment_size[1] =
+				(rest_size > segment_size) ?
+					segment_size : rest_size;
+		}
+		size += default_tvp_pool_segment_size[1];
+		if (default_tvp_pool_size_2 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_pool_segment_size[2] =
+				default_tvp_pool_size_2;
+			default_tvp_size =
+				size + default_tvp_pool_size_2;
+		} else {
+			default_tvp_pool_segment_size[2] =
+				default_tvp_size - size;
+		}
+		default_tvp_pool_segment_size[3] = 0;
+	} else {
+		if (default_tvp_pool_size_0 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[0] =
+				default_tvp_pool_size_0;
+			default_tvp_pool_segment_size[0] =
+				default_tvp_pool_size_0;
+		} else {
+			default_tvp_4k_pool_segment_size[0] =
+				default_tvp_4k_size * 4 / 12;
+			default_tvp_pool_segment_size[0] =
+				default_tvp_4k_size * 4 / 12;
+		}
+		size = default_tvp_pool_segment_size[0];
+		if (default_tvp_pool_size_1 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[1] =
+				default_tvp_pool_size_1;
+			default_tvp_pool_segment_size[1] =
+				default_tvp_pool_size_1;
+		} else {
+			segment_size = default_tvp_4k_size * 3 / 12;
+			rest_size = default_tvp_4k_size - size;
+			default_tvp_4k_pool_segment_size[1] =
+				(rest_size > segment_size) ?
+					segment_size : rest_size;
+			default_tvp_pool_segment_size[1] =
+				(rest_size > segment_size) ?
+					segment_size : rest_size;
+		}
+		size += default_tvp_pool_segment_size[1];
+		if (default_tvp_pool_size_2 >= DEFAULT_TVP_SEGMENT_MIN_SIZE) {
+			default_tvp_4k_pool_segment_size[2] =
+				default_tvp_pool_size_2;
+			default_tvp_pool_segment_size[2] =
+				default_tvp_pool_size_2;
+		} else {
+			default_tvp_4k_pool_segment_size[2] =
+				default_tvp_4k_size - size;
+			default_tvp_pool_segment_size[2] =
+				default_tvp_4k_size - size;
+		}
+		default_tvp_pool_segment_size[3] = 0;
+		default_tvp_4k_size = size + default_tvp_pool_segment_size[2];
+		default_tvp_size = default_tvp_4k_size;
+	}
+}
+
+int codec_mm_enable_tvp(int size, int flags)
+{
+	int ret;
+	struct codec_mm_mgt_s *mgt = get_mem_mgt();
+
+	mutex_lock(&mgt->tvp_protect_lock);
+	if (size == 0) {
+		if (flags == 1)
+			size = default_tvp_size;
+		else
+			size = default_tvp_4k_size;
+	}
+	if (tvp_dynamic_increase_disable) {
+		ret = codec_mm_extpool_pool_alloc(
+			&mgt->tvp_pool,
+			size, 0, 1);
+		if (ret) {
+			ret = 0;
+			mgt->tvp_enable = flags;
+			if (tvp_mode > 0)
+				atomic_add_return(1, &mgt->tvp_user_count);
+			pr_info("enable tvp for %d\n", flags);
+		} else {
+			pr_info("tvp enable failed size %d\n", size);
+			mutex_unlock(&mgt->tvp_protect_lock);
+			return -1;
+		}
+	} else {
+		if (mgt->tvp_pool.slot_num <= 0) {
+			codec_mm_tvp_segment_init();
+			ret = codec_mm_tvp_pool_alloc_by_slot(
+				&mgt->tvp_pool, 0, flags);
+			if (ret) {
+				ret = 0;
+				if (mgt->tvp_enable != 2)
+					mgt->tvp_enable = flags;
+				if (tvp_mode > 0)
+					atomic_add_return(1,
+						&mgt->tvp_user_count);
+				pr_info("enable tvp for %d\n", flags);
+			} else {
+				pr_info("tvp enable failed size %d\n", size);
+				mutex_unlock(&mgt->tvp_protect_lock);
+				return -1;
+			}
+		} else {
+			ret = 0;
+			if (mgt->tvp_enable != 2)
+				mgt->tvp_enable = flags;
+			if (tvp_mode > 0)
+				atomic_add_return(1, &mgt->tvp_user_count);
+			pr_info("enable tvp for %d\n", flags);
+		}
+	}
+	if (tvp_mode > 0)
+		pr_info("tvp_user_count is %d\n",
+			atomic_read(&mgt->tvp_user_count));
+	mutex_unlock(&mgt->tvp_protect_lock);
+	return ret;
+}
+EXPORT_SYMBOL(codec_mm_enable_tvp);
+
+int codec_mm_disable_tvp(void)
+{
+	int ret = 0;
+	struct codec_mm_mgt_s *mgt = get_mem_mgt();
+
+	mutex_lock(&mgt->tvp_protect_lock);
+	if (tvp_mode == 0) {
+		ret = codec_mm_extpool_pool_release(&mgt->tvp_pool);
+		mgt->tvp_enable = 0;
+		pr_info("disalbe tvp\n");
+		mutex_unlock(&mgt->tvp_protect_lock);
+		return ret;
+	}
+	if (atomic_dec_and_test(&mgt->tvp_user_count)) {
+		if (codec_mm_tvp_pool_unprotect_and_release(&mgt->tvp_pool)
+			== 0) {
+			mgt->tvp_enable = 0;
+			pr_info("disalbe tvp\n");
+			mutex_unlock(&mgt->tvp_protect_lock);
+			return ret;
+		}
+	}
+	if (atomic_read(&mgt->tvp_user_count) < 0)
+		atomic_set(&mgt->tvp_user_count, 0);
+	pr_info("tvp_user_count is %d\n",
+		atomic_read(&mgt->tvp_user_count));
+	mutex_unlock(&mgt->tvp_protect_lock);
+	return ret;
+}
+EXPORT_SYMBOL(codec_mm_disable_tvp);
 
 int codec_mm_video_tvp_enabled(void)
 {
@@ -1736,7 +2619,6 @@ EXPORT_SYMBOL(codec_mm_enough_for_size);
 
 int codec_mm_mgt_init(struct device *dev)
 {
-
 	struct codec_mm_mgt_s *mgt = get_mem_mgt();
 
 	INIT_LIST_HEAD(&mgt->mem_list);
@@ -1776,7 +2658,10 @@ int codec_mm_mgt_init(struct device *dev)
 			DEFAULT_TVP_SIZE_FOR_NO4K ?
 				DEFAULT_TVP_SIZE_FOR_NO4K :
 				default_tvp_4k_size;
-
+	if (get_meson_cpu_version(MESON_CPU_VERSION_LVL_MAJOR) <
+		MESON_CPU_MAJOR_ID_G12A)
+		tvp_dynamic_increase_disable = 1;
+	codec_mm_tvp_segment_init();
 	default_cma_res_size = mgt->total_cma_size;
 	mgt->global_memid = 0;
 	mutex_init(&mgt->tvp_pool.pool_lock);
@@ -1785,6 +2670,15 @@ int codec_mm_mgt_init(struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(codec_mm_mgt_init);
+
+void codec_mm_get_default_tvp_size(int *tvp_fhd, int *tvp_uhd)
+{
+	if (tvp_fhd)
+		*tvp_fhd = default_tvp_size;
+	if (tvp_uhd)
+		*tvp_uhd = default_tvp_4k_size;
+}
+EXPORT_SYMBOL(codec_mm_get_default_tvp_size);
 
 static int __init amstream_test_init(void)
 {
@@ -1875,8 +2769,11 @@ static ssize_t tvp_enable_help_show(struct class *class,
 	ssize_t size = 0;
 
 	struct codec_mm_mgt_s *mgt = get_mem_mgt();
-
-	size += sprintf(buf, "tvp_flag=%d\n", mgt->tvp_enable);
+	mutex_lock(&mgt->tvp_protect_lock);
+	size += sprintf(buf, "tvp_flag=%d\n",
+			(tvp_mode << 4) + mgt->tvp_enable);
+	size += sprintf(buf + size, "tvp ref count=%d\n",
+			atomic_read(&mgt->tvp_user_count));
 	size += sprintf(buf + size, "tvp enable help:\n");
 	size += sprintf(buf + size, "echo n > tvp_enable\n");
 	size += sprintf(buf + size, "0: disable tvp(tvp size to 0)\n");
@@ -1884,6 +2781,7 @@ static ssize_t tvp_enable_help_show(struct class *class,
 		"1: enable tvp for 1080p playing(use default size)\n");
 	size += sprintf(buf + size,
 		"2: enable tvp for 4k playing(use default 4k size)\n");
+	mutex_unlock(&mgt->tvp_protect_lock);
 	return size;
 }
 
@@ -1901,33 +2799,38 @@ static ssize_t tvp_enable_store(struct class *class,
 	if (ret != 0)
 		return -EINVAL;
 	/*
-	always free all scatter cache for
-	tvp changes.
-	*/
-	codec_mm_keeper_free_all_keep(2);
-	codec_mm_scatter_free_all_ignorecache(3);
+	 * always free all scatter cache for
+	 * tvp changes when tvp mode is 0.
+	 */
+	if (tvp_mode < 1) {
+		mutex_lock(&mgt->tvp_protect_lock);
+		codec_mm_keeper_free_all_keep(2);
+		codec_mm_scatter_free_all_ignorecache(3);
+		mutex_unlock(&mgt->tvp_protect_lock);
+	}
 	switch (val) {
-	case 0:
-		ret = codec_mm_extpool_pool_release(&mgt->tvp_pool);
-		mgt->tvp_enable = 0;
-		pr_info("disalbe tvp\n");
-		break;
-	case 1:
-		codec_mm_extpool_pool_alloc(
-			&mgt->tvp_pool,
-			default_tvp_size, 0, 1);
-		mgt->tvp_enable = 1;
-		pr_info("enable tvp for 1080p\n");
-		break;
-	case 2:
-		codec_mm_extpool_pool_alloc(
-			&mgt->tvp_pool,
-			default_tvp_4k_size, 0, 1);
-		mgt->tvp_enable = 2;
-		pr_info("enable tvp for 4k\n");
-		break;
-	default:
-		pr_err("unknown cmd! %d\n", val);
+		case 0:
+			codec_mm_disable_tvp();
+			break;
+		case 1:
+			ret = codec_mm_enable_tvp(default_tvp_size, val);
+			if (ret) {
+				pr_info("tvp enable failed tvp mode %d %d %d\n",
+					tvp_mode, val, default_tvp_size);
+				return -1;
+			}
+			break;
+		case 2:
+			ret = codec_mm_enable_tvp(default_tvp_4k_size, val);
+			if (ret) {
+				pr_info("tvp enable failed tvp mode %d %d %d\n",
+					tvp_mode, val, default_tvp_4k_size);
+				return -1;
+			}
+			break;
+		default:
+			pr_err("unknown cmd! %d\n", val);
+			break;
 	}
 	return size;
 }
@@ -2011,10 +2914,10 @@ static ssize_t tvp_region_show(struct class *class,
 	ret = codec_mm_tvp_get_mem_resource(res_victor, 8);
 	for (i = 0; i < ret; i++) {
 		off += sprintf(buf + off,
-			"segment%d:0x%p - 0x%p (size:0x%x)\n",
+			"segment%d:0x%lx - 0x%lx (size:0x%x)\n",
 			i,
-			(void *)res_victor[2 * i],
-			(void *)res_victor[2 * i + 1],
+			res_victor[2 * i],
+			res_victor[2 * i + 1],
 			(int)(res_victor[2 * i + 1] - res_victor[2 * i] + 1));
 	}
 	return off;
@@ -2190,6 +3093,12 @@ static struct mconfig codec_mm_configs[] = {
 	MC_PI32("default_tvp_size", &default_tvp_size),
 	MC_PI32("default_tvp_4k_size", &default_tvp_4k_size),
 	MC_PI32("default_cma_res_size", &default_cma_res_size),
+	MC_PI32("default_tvp_pool_size_0", &default_tvp_pool_size_0),
+	MC_PI32("default_tvp_pool_size_1", &default_tvp_pool_size_1),
+	MC_PI32("default_tvp_pool_size_2", &default_tvp_pool_size_2),
+	MC_PI32("default_tvp_4k_pool_size_0", &default_tvp_4k_pool_size_0),
+	MC_PI32("default_tvp_4k_pool_size_1", &default_tvp_4k_pool_size_1),
+	MC_PI32("default_tvp_4k_pool_size_2", &default_tvp_4k_pool_size_2),
 };
 static struct mconfig_node codec_mm_trigger_node;
 int codec_mm_trigger_fun(const char *trigger, int id, const char *buf, int size)
@@ -2278,7 +3187,7 @@ static int codec_mm_probe(struct platform_device *pdev)
 
 	pr_info("codec_mm_probe ok\n");
 
-	codec_mm_scatter_mgt_init();
+	codec_mm_scatter_mgt_init(&pdev->dev);
 	codec_mm_keeper_mgr_init();
 	amstream_test_init();
 	codec_mm_scatter_mgt_test();
@@ -2383,3 +3292,7 @@ module_param(debug_sc_mode, uint, 0664);
 MODULE_PARM_DESC(debug_sc_mode, "\n debug scatter module\n");
 module_param(debug_keep_mode, uint, 0664);
 MODULE_PARM_DESC(debug_keep_mode, "\n debug keep module\n");
+module_param(tvp_mode, uint, 0664);
+MODULE_PARM_DESC(tvp_mode, "\n tvp module\n");
+module_param(tvp_dynamic_increase_disable, uint, 0664);
+MODULE_PARM_DESC(tvp_dynamic_increase_disable, "\n disable tvp_dynamic_increase\n");

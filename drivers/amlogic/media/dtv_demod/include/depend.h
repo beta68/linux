@@ -28,24 +28,8 @@ struct page *aml_dma_alloc_contiguous(struct device *dev, int count,
 bool aml_dma_release_contiguous(struct device *dev, struct page *pages,
 						int count);
 
-
-/*void ary_test(void);*/
-enum aml_fe_n_mode_t {		/*same as aml_fe_mode_t in aml_fe.h*/
-	AM_FE_UNKNOWN_N,
-	AM_FE_QPSK_N,
-	AM_FE_QAM_N,
-	AM_FE_OFDM_N,
-	AM_FE_ATSC_N,
-	/*AM_FE_ANALOG = 16,*/
-	AM_FE_DTMB_N,
-	AM_FE_ISDBT_N,
-	AM_FE_NUM,
-};
-/*----------------------------------*/
-
 struct aml_exp_func {
-
-	int (*leave_mode)(enum aml_fe_n_mode_t mode);
+	int (*leave_mode)(enum fe_delivery_system delsys);
 };
 
 #endif	/*__DEPEND_H__*/

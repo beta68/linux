@@ -114,6 +114,11 @@
 	WRITE_HHI_REG_BITS(HHI_VDEC2_CLK_CNTL, 0, 8, 1);\
 }while(0)
 
+#define CHECK_RET(_ret) if (ret) {debug_print(\
+		"%s:%d:function call failed with result: %d\n",\
+		__FUNCTION__, __LINE__, _ret);}
+
+
 static int clock_real_clk[VDEC_MAX + 1];
 
 static unsigned int set_frq_enable, vdec_frq, hevc_frq, hevcb_frq;
@@ -125,14 +130,19 @@ static bool is_gp0_div2 = true;
 static int gp_pll_user_cb_vdec(struct gp_pll_user_handle_s *user,
 			int event)
 {
+	int ret;
+
 	debug_print("gp_pll_user_cb_vdec call\n");
 	if (event == GP_PLL_USER_EVENT_GRANT) {
 		struct clk *clk = clk_get(NULL, "gp0_pll");
 		if (!IS_ERR(clk)) {
-			if (is_gp0_div2)
-				clk_set_rate(clk, 1296000000UL);
-			else
-				clk_set_rate(clk, 648000000UL);
+			if (is_gp0_div2) {
+				ret = clk_set_rate(clk, 1296000000UL);
+				CHECK_RET(ret);
+			} else {
+				ret = clk_set_rate(clk, 648000000UL);
+				CHECK_RET(ret);
+			}
 			VDEC1_SAFE_CLOCK();
 			VDEC1_CLOCK_OFF();
 			if (is_gp0_div2)
@@ -403,24 +413,35 @@ static struct clk_set_setting clks_for_formats[] = {
 		{1920*1080*60, 166}, {4096*2048*30, 333},
 		{4096*2048*60, 630}, {INT_MAX, 630},}
 	},
+	{/*VFORMAT_AV1*/
+		{{1280*720*30, 100}, {1920*1080*30, 100},
+		{1920*1080*60, 166}, {4096*2048*30, 333},
+		{4096*2048*60, 630}, {INT_MAX, 630},}
+	},
 
 };
 
 void set_clock_gate(struct gate_switch_node *nodes, int num)
 {
 	struct gate_switch_node *node = NULL;
+	char *hevc_mux_str = NULL;
+
+	if (get_cpu_major_id() < AM_MESON_CPU_MAJOR_ID_SC2)
+		hevc_mux_str = "clk_hevc_mux";
+	else
+		hevc_mux_str = "clk_hevcf_mux";
 
 	do {
 		node = &nodes[num - 1];
-		if (IS_ERR_OR_NULL(node))
+		if (IS_ERR_OR_NULL(node) || (IS_ERR_OR_NULL(node->clk)))
 			pr_info("get mux clk err.\n");
 
 		if (!strcmp(node->name, "clk_vdec_mux"))
 			gclk.vdec_mux_node = node;
 		else if (!strcmp(node->name, "clk_hcodec_mux"))
 			gclk.hcodec_mux_node = node;
-		else if (!strcmp(node->name, "clk_hevc_mux"))
-			gclk.hevc_mux_node = node;
+		else if (!strcmp(node->name, hevc_mux_str))
+				gclk.hevc_mux_node = node;
 		else if (!strcmp(node->name, "clk_hevcb_mux"))
 			gclk.hevc_back_mux_node = node;
 	} while(--num);
@@ -445,6 +466,7 @@ int vdec_set_clk(int dec, int source, int div)
 static int vdec_set_clk(int dec, int rate)
 {
 	struct clk *clk = NULL;
+	int ret;
 
 	switch (dec) {
 	case VDEC_1:
@@ -484,7 +506,8 @@ static int vdec_set_clk(int dec, int rate)
 		return -1;
 	}
 
-	clk_set_rate(clk, rate);
+	ret = clk_set_rate(clk, rate);
+	CHECK_RET(ret);
 
 	return 0;
 }
@@ -780,7 +803,8 @@ static int hevc_back_clock_set(int clk)
 		clk = hevcb_frq;
 	}
 
-	if (get_cpu_major_id() >= MESON_CPU_MAJOR_ID_TXLX) {
+	if ((get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_TXLX) &&
+		(get_cpu_major_id() < AM_MESON_CPU_MAJOR_ID_SC2)) {
 		if ((READ_EFUSE_REG(EFUSE_LIC1) >> 28 & 0x1) && clk > 333) {
 			pr_info("The hevcb clock limit to 333MHz.\n");
 			clk = 333;
@@ -1005,17 +1029,20 @@ static int vdec_clock_get(enum vdec_type_e core)
 #define VDEC_HAS_VDEC_HCODEC
 #define VDEC_HAS_CLK_SETTINGS
 #define CLK_FOR_CPU {\
+	AM_MESON_CPU_MAJOR_ID_M8B,\
 	AM_MESON_CPU_MAJOR_ID_GXBB,\
 	AM_MESON_CPU_MAJOR_ID_GXTVBB,\
 	AM_MESON_CPU_MAJOR_ID_GXL,\
 	AM_MESON_CPU_MAJOR_ID_GXM,\
 	AM_MESON_CPU_MAJOR_ID_TXL,\
 	AM_MESON_CPU_MAJOR_ID_TXLX,\
+	AM_MESON_CPU_MAJOR_ID_GXLX,\
 	AM_MESON_CPU_MAJOR_ID_G12A,\
 	AM_MESON_CPU_MAJOR_ID_G12B,\
 	AM_MESON_CPU_MAJOR_ID_SM1,\
 	AM_MESON_CPU_MAJOR_ID_TL1,\
 	AM_MESON_CPU_MAJOR_ID_TM2,\
+	AM_MESON_CPU_MAJOR_ID_SC2,\
 	0}
 #include "clk.h"
 

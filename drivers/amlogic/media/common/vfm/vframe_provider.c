@@ -31,7 +31,7 @@
 #include "vftrace.h"
 
 #define MAX_PROVIDER_NUM    64
-static struct vframe_provider_s *provider_table[MAX_PROVIDER_NUM];
+static struct provider_table_s provider_table[MAX_PROVIDER_NUM];
 static atomic_t provider_used = ATOMIC_INIT(0);
 
 #define providers_lock() atomic_inc(&provider_used)
@@ -47,6 +47,14 @@ static DEFINE_MUTEX(provider_table_mutex);
 static DEFINE_SPINLOCK(provider_lock);
 static char last_receiver[32];
 static char last_provider[32];
+
+void provide_table_init(void)
+{
+	memset(&provider_table[0], 0,
+		sizeof(struct provider_table_s) * MAX_PROVIDER_NUM);
+}
+EXPORT_SYMBOL(provide_table_init);
+
 void provider_update_caller(
 	const char *receiver,
 	const char *provider)
@@ -73,7 +81,7 @@ void provider_print_last_info(void)
 		last_provider[0] ? last_provider : "null");
 	pr_info("register provider:\n");
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p)
 			pr_info("%s: user_cnt:%d\n", p->name,
 			atomic_read(&p->use_cnt));
@@ -95,11 +103,13 @@ int provider_list(char *buf)
 	int i;
 
 	len += sprintf(buf + len, "\nprovider list:\n");
+	TABLE_LOCK();
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p)
 			len += sprintf(buf + len, "   %s\n", p->name);
 	}
+	TABLE_UNLOCK();
 	return len;
 }
 
@@ -111,16 +121,20 @@ struct vframe_provider_s *vf_get_provider_by_name(const char *provider_name)
 {
 	struct vframe_provider_s *p = NULL;
 	int i;
+	char *name = NULL;
 
 	if (provider_name) {
 		int namelen = strlen(provider_name);
 
 		for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-			p = provider_table[i];
-			if (p && p->name && !strncmp(p->name,
+			p = provider_table[i].vframe_provider;
+			name = provider_table[i].name;
+			if (p && name &&
+				provider_table[i].used &&
+				!strncmp(name,
 					provider_name, namelen)) {
-				if (strlen(p->name) == namelen
-					|| p->name[namelen] == '.')
+				if (strlen(name) == namelen ||
+					name[namelen] == '.')
 					break;
 			}
 		}
@@ -258,6 +272,7 @@ int vf_reg_provider(struct vframe_provider_s *prov)
 	struct vframe_provider_s *p = NULL;
 	struct vframe_receiver_s *receiver = NULL;
 	int i;
+	int name_size;
 
 	if (!prov || !prov->name)
 		return -1;
@@ -266,24 +281,34 @@ int vf_reg_provider(struct vframe_provider_s *prov)
 	atomic_set(&prov->use_cnt, 0);/*set it ready for use.*/
 	TABLE_LOCK();
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p) {
-			if (!strcmp(p->name, prov->name)) {
+			if (p->name && !strcmp(p->name, prov->name)) {
 				TABLE_UNLOCK();
 				return -1;
 			}
 		}
 	}
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		if (provider_table[i] == NULL) {
-			provider_table[i] = prov;
+		if (!provider_table[i].used) {
+			provider_table[i].used = true;
+			name_size = strlen(prov->name) + 1;
+			if (name_size > PROVIDER_TABLE_NAME_SIZE) {
+				TABLE_UNLOCK();
+				pr_err("%s name =%s\n", __func__, prov->name);
+				return -1;
+			}
+			memcpy(provider_table[i].name, prov->name, name_size);
+			provider_table[i].vframe_provider = prov;
 			break;
 		}
 	}
 	TABLE_UNLOCK();
 	if (i < MAX_PROVIDER_NUM) {
+		TABLE_LOCK();
 		vf_update_active_map();
 		receiver = vf_get_receiver(prov->name);
+		TABLE_UNLOCK();
 		if (receiver && receiver->ops && receiver->ops->event_cb) {
 			receiver->ops->event_cb(VFRAME_EVENT_PROVIDER_REG,
 				(void *)prov->name,
@@ -314,9 +339,10 @@ void vf_unreg_provider(struct vframe_provider_s *prov)
 
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
 		TABLE_LOCK();
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p && !strcmp(p->name, prov->name)) {
-			provider_table[i] = NULL;
+			provider_table[i].used = false;
+			provider_table[i].vframe_provider = NULL;
 			TABLE_UNLOCK();
 			if (p->traceget) {
 				vftrace_free_trace(prov->traceget);
@@ -329,7 +355,9 @@ void vf_unreg_provider(struct vframe_provider_s *prov)
 			vf_provider_close(prov);
 			if (vfm_debug_flag & 1)
 				pr_err("%s:%s\n", __func__, prov->name);
+			TABLE_LOCK();
 			receiver = vf_get_receiver(prov->name);
+			TABLE_UNLOCK();
 			if (receiver && receiver->ops
 				&& receiver->ops->event_cb) {
 				receiver->ops->event_cb(
@@ -340,7 +368,9 @@ void vf_unreg_provider(struct vframe_provider_s *prov)
 				pr_err("%s Error to notify receiver\n",
 					__func__);
 			}
+			TABLE_LOCK();
 			vf_update_active_map();
+			TABLE_UNLOCK();
 			break;
 		}
 		TABLE_UNLOCK();
@@ -374,7 +404,7 @@ void vf_light_reg_provider(struct vframe_provider_s *prov)
 	int i;
 
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p && !strcmp(p->name, prov->name)) {
 			if (vfm_debug_flag & 1)
 				pr_err("%s:%s\n", __func__, prov->name);
@@ -402,7 +432,7 @@ void vf_light_unreg_provider(struct vframe_provider_s *prov)
 	int i;
 
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p && !strcmp(p->name, prov->name)) {
 			if (vfm_debug_flag & 1)
 				pr_err("%s:%s\n", __func__, prov->name);
@@ -427,9 +457,10 @@ void vf_ext_light_unreg_provider(struct vframe_provider_s *prov)
 
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
 		TABLE_LOCK();
-		p = provider_table[i];
+		p = provider_table[i].vframe_provider;
 		if (p && !strcmp(p->name, prov->name)) {
-			provider_table[i] = NULL;
+			provider_table[i].used = false;
+			provider_table[i].vframe_provider = NULL;
 			TABLE_UNLOCK();
 			if (vfm_debug_flag & 1)
 				pr_err("%s:%s\n", __func__, prov->name);
@@ -488,22 +519,28 @@ struct vframe_s *vf_get(const char *receiver)
 }
 EXPORT_SYMBOL(vf_get);
 
-void vf_put(struct vframe_s *vf, const char *receiver)
+int vf_put(struct vframe_s *vf, const char *receiver)
 {
 	struct vframe_provider_s *vfp;
+	int ret = 0;
+
 	providers_lock();
 	vfp = vf_get_provider(receiver);
 	if (use_provider(vfp)) {
 		provider_update_caller(receiver, vfp->name);
-		if (vfp->ops && vfp->ops->put)
+		if (vfp->ops && vfp->ops->put) {
 			vfp->ops->put(vf, vfp->op_arg);
+			ret = 0;
+		}
 		if (vf)
 			vftrace_info_in(vfp->traceput, vf);
 		unuse_provider(vfp);
 	} else {
 		provider_update_caller(receiver, NULL);
+		ret = -1;
 	}
 	providers_unlock();
+	return ret;
 }
 EXPORT_SYMBOL(vf_put);
 
@@ -531,5 +568,30 @@ int vf_get_states_by_name(const char *receiver_name,
 	return vf_get_states(vfp, states);
 }
 EXPORT_SYMBOL(vf_get_states_by_name);
+
+void dump_all_provider(void (*callback)(const char *name))
+{
+	struct vframe_provider_s *p = NULL;
+	int len = 0;
+	int i;
+	char *bufs[MAX_PROVIDER_NUM] = {0};
+
+	TABLE_LOCK();
+	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
+		p = provider_table[i].vframe_provider;
+		if (p)
+			bufs[len++] = kstrdup(p->name, GFP_KERNEL);
+	}
+	TABLE_UNLOCK();
+
+	providers_lock();
+	for (i = 0; i < len; i++) {
+		callback(bufs[i]);
+		kfree(bufs[i]);
+	}
+	providers_unlock();
+
+}
+EXPORT_SYMBOL(dump_all_provider);
 
 

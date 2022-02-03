@@ -23,7 +23,9 @@
 #include "osd_sync.h"
 #include "osd_drm.h"
 
-#define CANVAS_ALIGNED(x) (((x) + 63) & ~63)
+size_t osd_canvas_align(size_t x);
+
+#define CANVAS_ALIGNED(x) osd_canvas_align(x)
 #define MAX_HOLD_LINE     0x1f
 #define MIN_HOLD_LINE     0x04
 #define VIU1_DEFAULT_HOLD_LINE  0x08
@@ -177,6 +179,9 @@ extern void osd_get_info(u32 index, u32 *addr, u32 *width, u32 *height);
 void osd_update_scan_mode(void);
 void osd_update_3d_mode(void);
 void osd_update_vsync_hit(void);
+void osd_update_vsync_hit_viu2(void);
+void osd_update_vsync_hit_viu3(void);
+void osd_update_vsync_timestamp(void);
 void osd_hw_reset(void);
 void osd_mali_afbc_start(void);
 int logo_work_init(void);
@@ -236,4 +241,7 @@ void viu2_osd_reg_set(u32 addr, u32 val);
 void viu2_osd_reg_set_bits(u32 addr, u32 val, u32 start, u32 len);
 void viu2_osd_reg_set_mask(u32 addr, u32 _mask);
 void viu2_osd_reg_clr_mask(u32 addr, u32 _mask);
+int notify_preblend_to_amvideo(u32 preblend_en);
+void osd_get_display_fb(u32 index, u32 *osd_display_fb);
+void osd_set_display_fb(u32 index, u32 osd_display_fb);
 #endif

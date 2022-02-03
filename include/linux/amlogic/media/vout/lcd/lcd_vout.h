@@ -23,6 +23,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/amlogic/media/vout/vout_notify.h>
 #include <linux/amlogic/iomap.h>
+#include <linux/amlogic/media/vout/lcd/lcd_tcon_data.h>
 
 extern void lcd_vlock_m_update(unsigned int vlock_m);
 extern void lcd_vlock_frac_update(unsigned int vlock_farc);
@@ -95,6 +96,8 @@ enum lcd_chip_e {
 	LCD_CHIP_TL1,   /* 7 */
 	LCD_CHIP_SM1,	/* 8 */
 	LCD_CHIP_TM2,   /* 9 */
+	LCD_CHIP_T5,   /* 10 */
+	LCD_CHIP_T5D,   /* 11 */
 	LCD_CHIP_MAX,
 };
 
@@ -119,6 +122,7 @@ struct lcd_basic_s {
 	char model_name[MOD_LEN_MAX];
 	enum lcd_type_e lcd_type;
 	unsigned short lcd_bits;
+	unsigned char pinmux_flag;
 
 	unsigned short h_active;    /* Horizontal display area */
 	unsigned short v_active;    /* Vertical display area */
@@ -350,7 +354,7 @@ enum p2p_type_e {
 };
 
 struct p2p_config_s {
-	unsigned int p2p_type;
+	unsigned int p2p_type; /* bit[4:0] for type, bit[5] for vcm flag */
 	unsigned int lane_num;
 	unsigned int channel_sel0;
 	unsigned int channel_sel1;
@@ -381,6 +385,7 @@ enum lcd_power_type_e {
 	LCD_POWER_TYPE_EXTERN,
 	LCD_POWER_TYPE_WAIT_GPIO,
 	LCD_POWER_TYPE_CLK_SS,
+	LCD_POWER_TYPE_TCON_SPI_DATA_LOAD,
 	LCD_POWER_TYPE_MAX,
 };
 
@@ -436,6 +441,7 @@ struct lcd_power_ctrl_s {
 #define LCD_INIT_LEVEL_NORMAL         0
 #define LCD_INIT_LEVEL_PWR_OFF        1
 #define LCD_INIT_LEVEL_KERNEL_ON      2
+#define LCD_INIT_LEVEL_KERNEL_OFF     3
 
 struct lcd_boot_ctrl_s {
 	unsigned char lcd_type;	//bit[3:0]
@@ -461,15 +467,17 @@ struct lcd_config_s {
 	struct lcd_control_config_s lcd_control;
 	struct lcd_power_ctrl_s *lcd_power;
 	struct pinctrl *pin;
-	unsigned char pinmux_flag;
 	unsigned char change_flag;
+	unsigned char pinmux_flag;
 	unsigned char retry_enable_flag;
 	unsigned char retry_enable_cnt;
+	unsigned char customer_pinmux;
 };
 
 struct lcd_duration_s {
 	unsigned int duration_num;
 	unsigned int duration_den;
+	unsigned int frac;
 };
 
 #define LCD_STATUS_IF_ON      (1 << 0)
@@ -477,14 +485,13 @@ struct lcd_duration_s {
 #define LCD_STATUS_VMODE_ACTIVE  (1 << 2)
 #define LCD_STATUS_ON         (LCD_STATUS_IF_ON | LCD_STATUS_ENCL_ON)
 
-#define LCD_MUTE_UPDATE       (1 << 4)
-#define LCD_TEST_UPDATE       (1 << 4)
-
 #define LCD_VIU_SEL_NONE      0
+#define EXTERN_MUL_MAX	      10
 struct aml_lcd_drv_s {
 	char version[20];
 	struct lcd_data_s *data;
 	unsigned char lcd_mode;
+	unsigned char lcd_pxp;
 	unsigned char lcd_status;
 	unsigned char lcd_key_valid;
 	unsigned char lcd_clk_path; /* 0=hpll, 1=gp0_pll */
@@ -497,6 +504,7 @@ struct aml_lcd_drv_s {
 	unsigned char lcd_mute_flag;
 	unsigned char viu_sel;
 	unsigned char vsync_none_timer_flag;
+	unsigned int extern_mul_index[EXTERN_MUL_MAX];
 
 	struct device *dev;
 	struct lcd_config_s *lcd_config;
@@ -506,6 +514,7 @@ struct aml_lcd_drv_s {
 
 	int fr_auto_policy;
 	int fr_mode;
+	int fr_duration;
 	struct lcd_duration_s std_duration;
 
 	int tcon_status;
@@ -522,7 +531,7 @@ struct aml_lcd_drv_s {
 	void (*power_ctrl)(int status);
 
 	struct workqueue_struct *workqueue;
-	struct delayed_work lcd_probe_delayed_work;
+	struct work_struct lcd_probe_work;
 	struct work_struct  lcd_resume_work;
 	struct resource *res_vsync_irq;
 	struct resource *res_vsync2_irq;
@@ -530,10 +539,10 @@ struct aml_lcd_drv_s {
 	struct resource *res_tcon_irq;
 
 	struct mutex power_mutex;
+	spinlock_t isr_lock; /* for mute and test isr */
 };
 
 extern struct aml_lcd_drv_s *aml_lcd_get_driver(void);
-
 
 /* **********************************
  * IOCTL define

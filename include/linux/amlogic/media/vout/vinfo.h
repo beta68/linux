@@ -19,7 +19,6 @@
 #define _VINFO_H_
 #include <linux/amlogic/media/vfm/video_common.h>
 
-
 /* the MSB is represent vmode set by vmode_init */
 #define	VMODE_INIT_BIT_MASK	0x8000
 #define	VMODE_MODE_BIT_MASK	0xff
@@ -31,7 +30,9 @@ enum vmode_e {
 	VMODE_LCD,
 	VMODE_NULL, /* null mode is used as temporary witch mode state */
 	VMODE_INVALID,
-	VMODE_DUMMY_LCD,
+	VMODE_DUMMY_ENCP,
+	VMODE_DUMMY_ENCI,
+	VMODE_DUMMY_ENCL,
 	VMODE_MAX,
 	VMODE_INIT_NULL,
 	VMODE_MASK = 0xFF,
@@ -99,9 +100,24 @@ struct hdr10_plus_info {
 	uint8_t application_version;
 };
 
+struct cuva_info {
+	u32 cuva_support;
+	u8 rawdata[15];
+	u8 length;
+	u32 ieeeoui;
+	u8 system_start_code;
+	u8 version_code;
+	u32 display_max_lum;
+	u16 display_min_lum;
+	u8 monitor_mode_sup;
+	u8 rx_mode_sup;
+};
+
 struct hdr_info {
 /* RX EDID hdr support types */
+	/* hdr_support: bit0/SDR bit1/HDR bit2/SMPTE2084 bit3/HLG */
 	u32 hdr_support;
+	unsigned char static_metadata_type1;
 	unsigned char rawdata[7];
 /*
  *dynamic_info[0] expresses type1's parameters certainly
@@ -119,6 +135,7 @@ struct hdr_info {
 	u32 lumi_max; /* RX EDID Lumi Max value */
 	u32 lumi_avg; /* RX EDID Lumi Avg value */
 	u32 lumi_min; /* RX EDID Lumi Min value */
+	struct cuva_info cuva_info;
 };
 struct hdr10plus_para {
 	uint8_t application_version;
@@ -139,6 +156,7 @@ enum eotf_type {
 	EOTF_T_HDR10,
 	EOTF_T_SDR,
 	EOTF_T_LL_MODE,
+	EOTF_T_DV_AHEAD,
 	EOTF_T_MAX,
 };
 
@@ -191,6 +209,46 @@ struct dv_vsif_para {
 			uint8_t l11_byte3;
 		} ver2_l11;
 	} vers;
+};
+
+struct cuva_hdr_vsif_para {
+	u8 system_start_code;
+	u8 version_code;
+	u8 monitor_mode_en;
+	u8 transfer_character;
+};
+
+struct cuva_hdr_vs_emds_para {
+	u8 system_start_code;
+	u8 version_code;
+	u16 min_maxrgb_pq;
+	u16 avg_maxrgb_pq;
+	u16 var_maxrgb_pq;
+	u16 max_maxrgb_pq;
+	u16 targeted_max_lum_pq;
+	u8 transfer_character;
+	u8 base_enable_flag;
+	u16 base_param_m_p;
+	u16 base_param_m_m;
+	u16 base_param_m_a;
+	u16 base_param_m_b;
+	u16 base_param_m_n;
+	u8 base_param_k[3];
+	u8 base_param_delta_enable_mode;
+	u8 base_param_enable_delta;
+	u8 _3spline_enable_num;
+	u8 _3spline_enable_flag;
+	struct {
+		u8 th_enable_mode;
+		u8 th_enable_mb;
+		u16 th_enable;
+		u16 th_enable_delta[2];
+		u8 enable_strength;
+	} _3spline_data[2];
+	u8 color_saturation_num;
+	u8 color_saturation_gain[8];
+	u8 graphic_src_display_value;
+	u16 max_display_mastering_lum;
 };
 
 struct vsif_debug_save {
@@ -260,11 +318,13 @@ struct vout_device_s {
 		bool signal_sdr);
 	void (*fresh_tx_hdr10plus_pkt)(unsigned int flag,
 		struct hdr10plus_para *data);
-	void  (*fresh_tx_emp_pkt)(unsigned char *data, unsigned int type,
-	unsigned int size);
+	void (*fresh_tx_cuva_hdr_vsif)(struct cuva_hdr_vsif_para *data);
+	void (*fresh_tx_cuva_hdr_vs_emds)(struct cuva_hdr_vs_emds_para *data);
+	void (*fresh_tx_emp_pkt)(unsigned char *data, unsigned int type,
+		unsigned int size);
 };
 
-extern int send_dv_emp(enum eotf_type type,
+int send_emp(enum eotf_type type,
 	enum mode_type tunnel_mode,
 	struct dv_vsif_para *vsif_data,
 	unsigned char *p_vsem,
@@ -299,6 +359,7 @@ struct vinfo_s {
 	char *name;
 	enum vmode_e mode;
 	char ext_name[32];
+	u32 frac;
 	u32 width;
 	u32 height;
 	u32 field_height;

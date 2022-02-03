@@ -29,12 +29,13 @@
 #include <linux/amlogic/media/vout/vout_notify.h>
 #include "wss.h"
 #include "cvbs_out_reg.h"
-#include "cvbs_mode.h"
+#include <linux/amlogic/media/vout/cvbs_out.h>
 
 static const char * const wss_480i_cmd[] = {"ar", "cgms", "psp",
-		"prerec", "CC", "off"};
+		"prerec", "CC", "mvsn", "off"};
 static const char * const wss_576i_cmd[] = {"ar", "mode", "coding", "helper",
-		"ttxsubt", "opensubt", "surrsnd", "cgms", "full", "CC", "off"};
+		"ttxsubt", "opensubt", "surrsnd", "cgms", "full", "CC",
+		"mvsn", "off"};
 static unsigned int cgms_ntsc_crc[] = {0x0, 0x5, 0xa, 0xf};
 
 static void wss_set_output(unsigned int cmd, unsigned int mode,
@@ -72,6 +73,11 @@ static void wss_set_output(unsigned int cmd, unsigned int mode,
 		cvbs_out_reg_setb(ENCI_VBI_SETTING, 0x3, 4, 2);
 		/*480i, enable even field for line 20*/
 		/*enable odd field for line 283 */
+		break;
+	case WSS_576I_CMD_MVSN:
+	case WSS_480I_CMD_MVSN:
+		cvbs_out_reg_setb(ENCI_VIDEO_MODE_ADV, 1, 15, 1);
+		cvbs_out_reg_write(ENCI_MACV_N0, 0x3e);
 		break;
 	case WSS_576I_CMD_CGMS_A:
 	default:
@@ -221,6 +227,17 @@ static struct wss_info_t wss_info[] = {
 	},
 
 	{
+		WSS_576I_CMD_MVSN,
+		WSS_576I_MVSN_LINE,
+		WSS_576I_MVSN_START,
+		WSS_576I_MVSN_LENGTH,
+		WSS_576I_MVSN_MASK,
+		"wss macrovision option:\n"
+		"0: to do\n"
+		"1: to do\n"
+	},
+
+	{
 		WSS_480I_CMD_AR,
 		WSS_480I_LINE,
 		WSS_480I_AR_START,
@@ -286,6 +303,17 @@ static struct wss_info_t wss_info[] = {
 		WSS_480I_FULL_LENGTH,
 		WSS_480I_FULL_MASK,
 		"please input full wss data(12 bits)!\n"
+	},
+
+	{
+		WSS_480I_CMD_MVSN,
+		WSS_480I_MVSN_LINE,
+		WSS_480I_MVSN_START,
+		WSS_480I_MVSN_LENGTH,
+		WSS_480I_MVSN_MASK,
+		"wss macrovision option:\n"
+		"0: to do\n"
+		"1: to do\n"
 	},
 };
 
@@ -392,6 +420,26 @@ static void wss_show_status(unsigned int mode, char *wss_cmd)
 				pr_info("cgms 3: copy right asserted / copying restricted\n");
 				break;
 			}
+		} else if (!strncmp(wss_cmd, "mvsn", strlen("mvsn"))) {
+			unsigned int macro_register[] = {
+				ENCI_VIDEO_MODE_ADV,
+				ENCI_MACV_N0,
+				ENCI_MACV_MAX_AMP,
+				ENCI_MACV_PULSE_LO,
+				ENCI_MACV_PULSE_HI,
+				ENCI_MACV_BKP_MAX,
+				ENCP_MACV_EN,
+			};
+			int i, size;
+
+			size = sizeof(macro_register) / sizeof(int);
+			pr_info("------------------------\n");
+			for (i = 0; i < size; i++) {
+				pr_info("vcbus [0x%x] = 0x%x\n",
+					macro_register[i],
+					cvbs_out_reg_read
+					(macro_register[i]));
+			}
 		}
 	}
 }
@@ -468,10 +516,22 @@ static void wss_dispatch_cmd(char *p)
 ssize_t aml_CVBS_attr_wss_show(struct class *class,
 			struct class_attribute *attr, char *buf)
 {
-	unsigned int enable = ((cvbs_out_reg_read(ENCI_VBI_SETTING)&0xc)
-							== 0)?0:1;
-	unsigned int line = cvbs_out_reg_read(ENCI_VBI_WSS_LN)+1;
-	unsigned int data = cvbs_out_reg_read(ENCI_VBI_WSSDT);
+	unsigned int line = 0;
+	unsigned int data = 0;
+	unsigned int enable = ((cvbs_out_reg_read(ENCI_VBI_SETTING) & 0x3c)
+						== 0) ? 0 : 1;
+	if (get_local_cvbs_mode() == MODE_576CVBS) {
+		line = cvbs_out_reg_read(ENCI_VBI_WSS_LN) + 1;
+		data = cvbs_out_reg_read(ENCI_VBI_WSSDT);
+	} else if (get_local_cvbs_mode() == MODE_480CVBS) {
+		line = cvbs_out_reg_read(ENCI_VBI_CGMS_LN);
+		line >>= 8;
+		line = line + 3;
+
+		data = cvbs_out_reg_read(ENCI_VBI_CGMSDT_L);
+		data >>= wss_info[11].start;
+		data &= 0xff;
+	}
 
 	if (enable == 1)
 		return sprintf(buf, "wss line:%d data 0x%x\n", line, data);

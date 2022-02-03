@@ -32,17 +32,24 @@
 
 #include "aml_vcodec_drv.h"
 #include "aml_vcodec_dec.h"
-#include "aml_vcodec_dec_pm.h"
 #include "aml_vcodec_util.h"
 #include "aml_vcodec_vfm.h"
+#include <linux/file.h>
+#include <linux/anon_inodes.h>
 
 #define VDEC_HW_ACTIVE		0x10
 #define VDEC_IRQ_CFG		0x11
 #define VDEC_IRQ_CLR		0x10
 #define VDEC_IRQ_CFG_REG	0xa4
 
-bool scatter_mem_enable;
-bool param_sets_from_ucode;
+#define V4LVIDEO_IOC_MAGIC  'I'
+#define V4LVIDEO_IOCTL_ALLOC_FD				_IOW(V4LVIDEO_IOC_MAGIC, 0x02, int)
+#define V4LVIDEO_IOCTL_CHECK_FD				_IOW(V4LVIDEO_IOC_MAGIC, 0x03, int)
+#define V4LVIDEO_IOCTL_SET_CONFIG_PARAMS	_IOWR(V4LVIDEO_IOC_MAGIC, 0x04, struct v4l2_config_parm)
+#define V4LVIDEO_IOCTL_GET_CONFIG_PARAMS	_IOWR(V4LVIDEO_IOC_MAGIC, 0x05, struct v4l2_config_parm)
+
+bool param_sets_from_ucode = 1;
+bool enable_drm_mode;
 
 static int fops_vcodec_open(struct file *file)
 {
@@ -68,7 +75,6 @@ static int fops_vcodec_open(struct file *file)
 	file->private_data = &ctx->fh;
 	v4l2_fh_add(&ctx->fh);
 	INIT_LIST_HEAD(&ctx->list);
-	INIT_LIST_HEAD(&ctx->capture_list);
 	INIT_LIST_HEAD(&ctx->vdec_thread_list);
 	dev->filp = file;
 	ctx->dev = dev;
@@ -76,41 +82,49 @@ static int fops_vcodec_open(struct file *file)
 	mutex_init(&ctx->state_lock);
 	mutex_init(&ctx->lock);
 	spin_lock_init(&ctx->slock);
-	init_waitqueue_head(&ctx->wq);
 	init_completion(&ctx->comp);
 
-	ctx->scatter_mem_enable = scatter_mem_enable ? 1 : 0;
 	ctx->param_sets_from_ucode = param_sets_from_ucode ? 1 : 0;
+
+	if (enable_drm_mode) {
+		ctx->is_drm_mode = true;
+		ctx->param_sets_from_ucode = true;
+	}
 
 	ctx->type = AML_INST_DECODER;
 	ret = aml_vcodec_dec_ctrls_setup(ctx);
 	if (ret) {
-		aml_v4l2_err("Failed to setup vcodec controls");
+		v4l_dbg(ctx, V4L_DEBUG_CODEC_ERROR,
+			"Failed to setup vcodec controls\n");
 		goto err_ctrls_setup;
 	}
 	ctx->m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev_dec, ctx,
 		&aml_vcodec_dec_queue_init);
 	if (IS_ERR((__force void *)ctx->m2m_ctx)) {
 		ret = PTR_ERR((__force void *)ctx->m2m_ctx);
-		aml_v4l2_err("Failed to v4l2_m2m_ctx_init() (%d)", ret);
+		v4l_dbg(ctx, V4L_DEBUG_CODEC_ERROR,
+			"Failed to v4l2_m2m_ctx_init() (%d)\n", ret);
 		goto err_m2m_ctx_init;
 	}
 	src_vq = v4l2_m2m_get_vq(ctx->m2m_ctx,
 				V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+	ctx->output_thread_ready = true;
 	ctx->empty_flush_buf->vb.vb2_buf.vb2_queue = src_vq;
 	ctx->empty_flush_buf->lastframe = true;
 	aml_vcodec_dec_set_default_params(ctx);
 
 	ret = aml_thread_start(ctx, try_to_capture, AML_THREAD_CAPTURE, "cap");
 	if (ret) {
-		aml_v4l2_err("Failed to creat capture thread.");
+		v4l_dbg(ctx, V4L_DEBUG_CODEC_ERROR,
+			"Failed to creat capture thread.\n");
 		goto err_creat_thread;
 	}
 
 	list_add(&ctx->list, &dev->ctx_list);
 
 	mutex_unlock(&dev->dev_mutex);
-	pr_info("[%d] %s decoder\n", ctx->id, dev_name(&dev->plat_dev->dev));
+	v4l_dbg(ctx, V4L_DEBUG_CODEC_PRINFO, "%s decoder %lx\n",
+		dev_name(&dev->plat_dev->dev), (ulong)ctx);
 
 	return ret;
 
@@ -134,7 +148,7 @@ static int fops_vcodec_release(struct file *file)
 	struct aml_vcodec_dev *dev = video_drvdata(file);
 	struct aml_vcodec_ctx *ctx = fh_to_ctx(file->private_data);
 
-	pr_info("[%d] release decoder\n", ctx->id);
+	v4l_dbg(ctx, V4L_DEBUG_CODEC_PRINFO, "release decoder %lx\n", (ulong) ctx);
 	mutex_lock(&dev->dev_mutex);
 
 	/*
@@ -159,12 +173,245 @@ static int fops_vcodec_release(struct file *file)
 	return 0;
 }
 
+static int v4l2video_file_release(struct inode *inode, struct file *file)
+{
+	v4l_dbg(0, V4L_DEBUG_CODEC_BUFMGR, "file: %lx, data: %lx\n",
+		(ulong) file, (ulong) file->private_data);
+
+	if (file->private_data)
+		vdec_frame_buffer_release(file->private_data);
+
+	return 0;
+}
+
+const struct file_operations v4l2_file_fops = {
+	.release = v4l2video_file_release,
+};
+
+int v4l2_alloc_fd(int *fd)
+{
+	struct file *file = NULL;
+	int file_fd = get_unused_fd_flags(O_CLOEXEC);
+
+	if (file_fd < 0) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"get unused fd fail\n");
+		return -ENODEV;
+	}
+
+	file = anon_inode_getfile("v4l2_meta_file", &v4l2_file_fops, NULL, 0);
+	if (IS_ERR(file)) {
+		put_unused_fd(file_fd);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"anon_inode_getfile fail\n");
+		return -ENODEV;
+	}
+
+	file->private_data =
+		kzalloc(sizeof(struct file_private_data), GFP_KERNEL);
+	if (!file->private_data) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"alloc priv data faild.\n");
+		return -ENOMEM;
+	}
+
+	v4l_dbg(0, V4L_DEBUG_CODEC_BUFMGR, "fd %d, file %lx, data: %lx\n",
+		file_fd, (ulong) file, (ulong) file->private_data);
+
+	fd_install(file_fd, file);
+	*fd = file_fd;
+
+	return 0;
+}
+
+extern const struct file_operations v4l2_file_fops;
+bool is_v4l2_buf_file(struct file *file)
+{
+	return file->f_op == &v4l2_file_fops;
+}
+
+int v4l2_check_fd(int fd)
+{
+	struct file *file;
+
+	file = fget(fd);
+
+	if (!file) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"fget fd %d fail!\n", fd);
+		return -EBADF;
+	}
+
+	if (!is_v4l2_buf_file(file)) {
+		fput(file);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"is_v4l2_buf_file fail!\n");
+		return -1;
+	}
+
+	fput(file);
+
+	v4l_dbg(0, V4L_DEBUG_CODEC_EXINFO,
+		"ioctl ok, comm %s, pid %d\n",
+		 current->comm, current->pid);
+
+	return 0;
+}
+
+int dmabuf_fd_install_data(int fd, void* data, u32 size)
+{
+	struct file *file;
+
+	file = fget(fd);
+
+	if (!file) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"fget fd %d fail!, comm %s, pid %d\n",
+			fd, current->comm, current->pid);
+		return -EBADF;
+	}
+
+	if (!is_v4l2_buf_file(file)) {
+		fput(file);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"the buf file checked fail!\n");
+		return -EBADF;
+	}
+
+	memcpy(file->private_data, data, size);
+
+	fput(file);
+
+	return 0;
+}
+
+void* v4l_get_vf_handle(int fd)
+{
+	struct file *file;
+	struct file_private_data *data = NULL;
+	void *vf_handle = 0;
+
+	file = fget(fd);
+
+	if (!file) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"fget fd %d fail!, comm %s, pid %d\n",
+			fd, current->comm, current->pid);
+		return NULL;
+	}
+
+	if (!is_v4l2_buf_file(file)) {
+		fput(file);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"the buf file checked fail!\n");
+		return NULL;
+	}
+
+	data = (struct file_private_data*) file->private_data;
+	if (data) {
+		vf_handle = &data->vf;
+		v4l_dbg(0, V4L_DEBUG_CODEC_BUFMGR, "file: %lx, data: %lx\n",
+			(ulong) file, (ulong) data);
+	}
+
+	fput(file);
+
+	return vf_handle;
+}
+
+
+static long v4l2_vcodec_ioctl(struct file *file,
+			unsigned int cmd,
+			ulong arg)
+{
+	long ret = 0;
+	void __user *argp = (void __user *)arg;
+
+	switch (cmd) {
+	case V4LVIDEO_IOCTL_ALLOC_FD:
+	{
+		u32 v4lvideo_fd = 0;
+
+		ret = v4l2_alloc_fd(&v4lvideo_fd);
+		if (ret != 0)
+			break;
+		put_user(v4lvideo_fd, (u32 __user *)argp);
+		v4l_dbg(0, V4L_DEBUG_CODEC_EXINFO,
+			"V4LVIDEO_IOCTL_ALLOC_FD fd %d\n",
+			v4lvideo_fd);
+		break;
+	}
+	case V4LVIDEO_IOCTL_CHECK_FD:
+	{
+		u32 v4lvideo_fd = 0;
+
+		get_user(v4lvideo_fd, (u32 __user *)argp);
+		ret = v4l2_check_fd(v4lvideo_fd);
+		if (ret != 0)
+			break;
+		v4l_dbg(0, V4L_DEBUG_CODEC_EXINFO,
+			"V4LVIDEO_IOCTL_CHECK_FD fd %d\n",
+			v4lvideo_fd);
+		break;
+	}
+	case V4LVIDEO_IOCTL_SET_CONFIG_PARAMS:
+	{
+		struct aml_vcodec_ctx *ctx = NULL;
+
+		if (is_v4l2_buf_file(file))
+			break;
+
+		ctx = fh_to_ctx(file->private_data);
+		if (copy_from_user((void *)&ctx->config,
+			(void *)argp, sizeof(ctx->config))) {
+			v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+				"set config parm err\n");
+			return -EFAULT;
+		}
+		break;
+	}
+	case V4LVIDEO_IOCTL_GET_CONFIG_PARAMS:
+	{
+		struct aml_vcodec_ctx *ctx = NULL;
+
+		if (is_v4l2_buf_file(file))
+			break;
+
+		ctx = fh_to_ctx(file->private_data);
+		if (copy_to_user((void *)argp,
+			(void *)&ctx->config, sizeof(ctx->config))) {
+			v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+				"get config parm err\n");
+			return -EFAULT;
+		}
+		break;
+	}
+	default:
+		return video_ioctl2(file, cmd, arg);
+	}
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long v4l2_compat_ioctl(struct file *file,
+	unsigned int cmd, ulong arg)
+{
+	long ret = 0;
+
+	ret = v4l2_vcodec_ioctl(file, cmd, (ulong)compat_ptr(arg));
+	return ret;
+}
+#endif
+
 static const struct v4l2_file_operations aml_vcodec_fops = {
 	.owner		= THIS_MODULE,
 	.open		= fops_vcodec_open,
 	.release	= fops_vcodec_release,
 	.poll		= v4l2_m2m_fop_poll,
-	.unlocked_ioctl	= video_ioctl2,
+	.unlocked_ioctl = v4l2_vcodec_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = v4l2_compat_ioctl,
+#endif
 	.mmap		= v4l2_m2m_fop_mmap,
 };
 
@@ -190,7 +437,8 @@ static int aml_vcodec_probe(struct platform_device *pdev)
 
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
 	if (ret) {
-		aml_v4l2_err("v4l2_device_register err=%d", ret);
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"v4l2_device_register err=%d\n", ret);
 		goto err_res;
 	}
 
@@ -198,7 +446,8 @@ static int aml_vcodec_probe(struct platform_device *pdev)
 
 	vfd_dec = video_device_alloc();
 	if (!vfd_dec) {
-		aml_v4l2_err("Failed to allocate video device");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"Failed to allocate video device\n");
 		ret = -ENOMEM;
 		goto err_dec_alloc;
 	}
@@ -220,7 +469,8 @@ static int aml_vcodec_probe(struct platform_device *pdev)
 
 	dev->m2m_dev_dec = v4l2_m2m_init(&aml_vdec_m2m_ops);
 	if (IS_ERR((__force void *)dev->m2m_dev_dec)) {
-		aml_v4l2_err("Failed to init mem2mem dec device");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"Failed to init mem2mem dec device\n");
 		ret = PTR_ERR((__force void *)dev->m2m_dev_dec);
 		goto err_dec_mem_init;
 	}
@@ -229,7 +479,8 @@ static int aml_vcodec_probe(struct platform_device *pdev)
 		alloc_ordered_workqueue(AML_VCODEC_DEC_NAME,
 			WQ_MEM_RECLAIM | WQ_FREEZABLE);
 	if (!dev->decode_workqueue) {
-		aml_v4l2_err("Failed to create decode workqueue");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"Failed to create decode workqueue\n");
 		ret = -EINVAL;
 		goto err_event_workq;
 	}
@@ -238,11 +489,13 @@ static int aml_vcodec_probe(struct platform_device *pdev)
 
 	ret = video_register_device(vfd_dec, VFL_TYPE_GRABBER, 26);
 	if (ret) {
-		pr_err("Failed to register video device\n");
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"Failed to register video device\n");
 		goto err_dec_reg;
 	}
 
-	pr_info("decoder registered as /dev/video%d\n", vfd_dec->num);
+	v4l_dbg(0, V4L_DEBUG_CODEC_PRINFO,
+		"decoder registered as /dev/video%d\n", vfd_dec->num);
 
 	return 0;
 
@@ -331,8 +584,9 @@ module_init(amvdec_ports_init);
 module_exit(amvdec_ports_exit);
 */
 
-module_param(aml_v4l2_dbg_level, int, 0644);
-module_param(aml_vcodec_dbg, bool, 0644);
+u32 debug_mode;
+EXPORT_SYMBOL(debug_mode);
+module_param(debug_mode, uint, 0644);
 
 bool aml_set_vfm_enable;
 EXPORT_SYMBOL(aml_set_vfm_enable);
@@ -354,15 +608,27 @@ int vp9_need_prefix;
 EXPORT_SYMBOL(vp9_need_prefix);
 module_param(vp9_need_prefix, int, 0644);
 
+int av1_need_prefix;
+EXPORT_SYMBOL(av1_need_prefix);
+module_param(av1_need_prefix, int, 0644);
+
 bool multiplanar;
 EXPORT_SYMBOL(multiplanar);
 module_param(multiplanar, bool, 0644);
 
-EXPORT_SYMBOL(scatter_mem_enable);
-module_param(scatter_mem_enable, bool, 0644);
+bool dump_capture_frame;
+EXPORT_SYMBOL(dump_capture_frame);
+module_param(dump_capture_frame, bool, 0644);
+
+int dump_output_frame;
+EXPORT_SYMBOL(dump_output_frame);
+module_param(dump_output_frame, int, 0644);
 
 EXPORT_SYMBOL(param_sets_from_ucode);
 module_param(param_sets_from_ucode, bool, 0644);
+
+EXPORT_SYMBOL(enable_drm_mode);
+module_param(enable_drm_mode, bool, 0644);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("AML video codec V4L2 decoder driver");

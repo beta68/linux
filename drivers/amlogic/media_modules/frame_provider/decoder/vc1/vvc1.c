@@ -41,9 +41,9 @@
 #include <linux/amlogic/media/codec_mm/codec_mm.h>
 #include <linux/amlogic/media/codec_mm/configs.h>
 #include "../utils/firmware.h"
-#include <linux/amlogic/tee.h>
+#include "../utils/secprot.h"
 #include <linux/delay.h>
-
+#include "../../../common/chips/decoder_cpu_ver_info.h"
 
 
 #define DRIVER_NAME "amvdec_vc1"
@@ -93,6 +93,7 @@
 #define MEM_LEVEL_CNT_BIT       18
 #endif
 static struct vdec_info *gvs;
+static struct vdec_s *vdec = NULL;
 
 static struct vframe_s *vvc1_vf_peek(void *);
 static struct vframe_s *vvc1_vf_get(void *);
@@ -101,7 +102,7 @@ static int vvc1_vf_states(struct vframe_states *states, void *);
 static int vvc1_event_cb(int type, void *data, void *private_data);
 
 static int vvc1_prot_init(void);
-static void vvc1_local_init(void);
+static void vvc1_local_init(bool is_reset);
 
 static const char vvc1_dec_id[] = "vvc1-dev";
 
@@ -130,8 +131,12 @@ static u32 stat;
 static u32 buf_size = 32 * 1024 * 1024;
 static u32 buf_offset;
 static u32 avi_flag;
+static u32 unstable_pts_debug;
+static u32 unstable_pts;
 static u32 vvc1_ratio;
 static u32 vvc1_format;
+
+static int ar = 0;
 
 static u32 intra_output;
 static u32 frame_width, frame_height, frame_dur;
@@ -143,6 +148,8 @@ static u64 next_pts_us64;
 static bool is_reset;
 static struct work_struct set_clk_work;
 static struct work_struct error_wd_work;
+spinlock_t vc1_rp_lock;
+
 
 #ifdef DEBUG_PTS
 static u32 pts_hit, pts_missed, pts_i_hit, pts_i_missed;
@@ -205,8 +212,6 @@ static inline u32 index2canvas(u32 index)
 
 static void set_aspect_ratio(struct vframe_s *vf, unsigned int pixel_ratio)
 {
-	int ar = 0;
-
 	if (vvc1_ratio == 0) {
 		/* always stretch to 16:9 */
 		vf->ratio_control |= (0x90 << DISP_RATIO_ASPECT_RATIO_BIT);
@@ -221,46 +226,74 @@ static void set_aspect_ratio(struct vframe_s *vf, unsigned int pixel_ratio)
 				 vvc1_amstream_dec_info.width;
 			break;
 		case 1:
+			vf->sar_width = 1;
+			vf->sar_height = 1;
 			ar = (vf->height * vvc1_ratio) / vf->width;
 			break;
 		case 2:
+			vf->sar_width = 12;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 12);
 			break;
 		case 3:
+			vf->sar_width = 10;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 10);
 			break;
 		case 4:
+			vf->sar_width = 16;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 16);
 			break;
 		case 5:
+			vf->sar_width = 40;
+			vf->sar_height = 33;
 			ar = (vf->height * 33 * vvc1_ratio) / (vf->width * 40);
 			break;
 		case 6:
+			vf->sar_width = 24;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 24);
 			break;
 		case 7:
+			vf->sar_width = 20;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 20);
 			break;
 		case 8:
+			vf->sar_width = 32;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 32);
 			break;
 		case 9:
+			vf->sar_width = 80;
+			vf->sar_height = 33;
 			ar = (vf->height * 33 * vvc1_ratio) / (vf->width * 80);
 			break;
 		case 10:
+			vf->sar_width = 18;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 18);
 			break;
 		case 11:
+			vf->sar_width = 15;
+			vf->sar_height = 11;
 			ar = (vf->height * 11 * vvc1_ratio) / (vf->width * 15);
 			break;
 		case 12:
+			vf->sar_width = 64;
+			vf->sar_height = 33;
 			ar = (vf->height * 33 * vvc1_ratio) / (vf->width * 64);
 			break;
 		case 13:
+			vf->sar_width = 160;
+			vf->sar_height = 99;
 			ar = (vf->height * 99 * vvc1_ratio) /
 				(vf->width * 160);
 			break;
 		default:
+			vf->sar_width = 1;
+			vf->sar_height = 1;
 			ar = (vf->height * vvc1_ratio) / vf->width;
 			break;
 		}
@@ -270,6 +303,15 @@ static void set_aspect_ratio(struct vframe_s *vf, unsigned int pixel_ratio)
 
 	vf->ratio_control = (ar << DISP_RATIO_ASPECT_RATIO_BIT);
 	/*vf->ratio_control |= DISP_RATIO_FORCECONFIG | DISP_RATIO_KEEPRATIO;*/
+}
+
+static void vc1_set_rp(void) {
+	unsigned long flags;
+
+	spin_lock_irqsave(&vc1_rp_lock, flags);
+	STBUF_WRITE(&vdec->vbuf, set_rp,
+		READ_VREG(VLD_MEM_VIFIFO_RP));
+	spin_unlock_irqrestore(&vc1_rp_lock, flags);
 }
 
 static irqreturn_t vvc1_isr(int irq, void *dev_id)
@@ -289,6 +331,8 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 	if (reg) {
 		v_width = READ_VREG(AV_SCRATCH_J);
 		v_height = READ_VREG(AV_SCRATCH_K);
+
+		vc1_set_rp();
 
 		if (v_width && v_width <= 4096
 			&& (v_width != vvc1_amstream_dec_info.width)) {
@@ -453,6 +497,11 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 					vvc1_amstream_dec_info.rate >> 1;
 					next_pts = 0;
 					next_pts_us64 = 0;
+					if (picture_type != I_PICTURE &&
+						unstable_pts) {
+						vf->pts = 0;
+						vf->pts_us64 = 0;
+					}
 				}
 			} else {
 				vf->pts = next_pts;
@@ -467,15 +516,20 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 					}
 					if (next_pts_us64 != 0) {
 						next_pts_us64 +=
-						((vf->duration) -
+						div_u64((u64)((vf->duration) -
 						((vf->duration) >> 4)) *
-						100 / 9;
+						100, 9);
 					}
 				} else {
 					vf->duration =
 					vvc1_amstream_dec_info.rate >> 1;
 					next_pts = 0;
 					next_pts_us64 = 0;
+					if (picture_type != I_PICTURE &&
+						unstable_pts) {
+						vf->pts = 0;
+						vf->pts_us64 = 0;
+					}
 				}
 			}
 
@@ -496,7 +550,6 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 				decoder_bmmu_box_get_mem_handle(
 					mm_blk_handle,
 					buffer_index);
-
 			kfifo_put(&display_q, (const struct vframe_s *)vf);
 			ATRACE_COUNTER(MODULE_NAME, vf->pts);
 
@@ -529,14 +582,19 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 						 ((vf->duration) >> 4));
 				}
 				if (next_pts_us64 != 0) {
-					next_pts_us64 += ((vf->duration) -
-					((vf->duration) >> 4)) * 100 / 9;
+					next_pts_us64 += div_u64((u64)((vf->duration) -
+					((vf->duration) >> 4)) * 100, 9);
 				}
 			} else {
 				vf->duration =
 					vvc1_amstream_dec_info.rate >> 1;
 				next_pts = 0;
 				next_pts_us64 = 0;
+				if (picture_type != I_PICTURE &&
+					unstable_pts) {
+					vf->pts = 0;
+					vf->pts_us64 = 0;
+				}
 			}
 
 			vf->duration_pulldown = 0;
@@ -556,7 +614,6 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 				decoder_bmmu_box_get_mem_handle(
 					mm_blk_handle,
 					buffer_index);
-
 			kfifo_put(&display_q, (const struct vframe_s *)vf);
 			ATRACE_COUNTER(MODULE_NAME, vf->pts);
 
@@ -597,6 +654,11 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 						vvc1_amstream_dec_info.rate;
 					next_pts = 0;
 					next_pts_us64 = 0;
+					if (picture_type != I_PICTURE &&
+						unstable_pts) {
+						vf->pts = 0;
+						vf->pts_us64 = 0;
+					}
 				}
 			} else {
 				vf->pts = next_pts;
@@ -611,15 +673,20 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 					}
 					if (next_pts_us64 != 0) {
 						next_pts_us64 +=
-						((vf->duration) -
+						div_u64((u64)((vf->duration) -
 						((vf->duration) >> 4)) *
-						100 / 9;
+						100, 9);
 					}
 				} else {
 					vf->duration =
 						vvc1_amstream_dec_info.rate;
 					next_pts = 0;
 					next_pts_us64 = 0;
+					if (picture_type != I_PICTURE &&
+						unstable_pts) {
+						vf->pts = 0;
+						vf->pts_us64 = 0;
+					}
 				}
 			}
 
@@ -642,6 +709,7 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 				decoder_bmmu_box_get_mem_handle(
 					mm_blk_handle,
 					buffer_index);
+
 			kfifo_put(&display_q, (const struct vframe_s *)vf);
 			ATRACE_COUNTER(MODULE_NAME, vf->pts);
 
@@ -719,13 +787,22 @@ static int vvc1_event_cb(int type, void *data, void *private_data)
 		vf_light_unreg_provider(&vvc1_vf_prov);
 #endif
 		spin_lock_irqsave(&lock, flags);
-		vvc1_local_init();
+		vvc1_local_init(true);
 		vvc1_prot_init();
 		spin_unlock_irqrestore(&lock, flags);
 #ifndef CONFIG_AMLOGIC_POST_PROCESS_MANAGER
 		vf_reg_provider(&vvc1_vf_prov);
 #endif
 		amvdec_start();
+	}
+
+	if (type & VFRAME_EVENT_RECEIVER_REQ_STATE) {
+		struct provider_state_req_s *req =
+			(struct provider_state_req_s *)data;
+		if (req->req_type == REQ_STATE_SECURE && vdec)
+			req->req_result[0] = vdec_secure(vdec);
+		else
+			req->req_result[0] = 0xffffffff;
 	}
 	return 0;
 }
@@ -753,6 +830,7 @@ int vvc1_dec_status(struct vdec_s *vdec, struct vdec_info *vstatus)
 	vstatus->total_data = gvs->total_data;
 	vstatus->samp_cnt = gvs->samp_cnt;
 	vstatus->offset = gvs->offset;
+	vstatus->ratio_control = (ar << DISP_RATIO_ASPECT_RATIO_BIT);
 	snprintf(vstatus->vdec_name, sizeof(vstatus->vdec_name),
 		"%s", DRIVER_NAME);
 
@@ -917,18 +995,25 @@ static int vvc1_prot_init(void)
 #ifdef NV21
 	SET_VREG_MASK(MDEC_PIC_DC_CTRL, 1 << 17);
 #endif
+	CLEAR_VREG_MASK(MDEC_PIC_DC_CTRL, 1 << 16);
+
 	return r;
 }
 
-static void vvc1_local_init(void)
+static void vvc1_local_init(bool is_reset)
 {
 	int i;
 
-	/* vvc1_ratio = vvc1_amstream_dec_info.ratio; */
-	vvc1_ratio = 0x100;
+	/* vvc1_ratio = 0x100; */
+	vvc1_ratio = (vvc1_amstream_dec_info.ratio >> DISP_RATIO_ASPECT_RATIO_BIT);
 
-	avi_flag = (unsigned long) vvc1_amstream_dec_info.param;
+	avi_flag = (unsigned long) vvc1_amstream_dec_info.param & 0x01;
 
+	unstable_pts = (((unsigned long) vvc1_amstream_dec_info.param & 0x40) >> 6);
+	if (unstable_pts_debug == 1) {
+		unstable_pts = 1;
+		pr_info("vc1 init , unstable_pts_debug = %u\n",unstable_pts_debug);
+	}
 	total_frame = 0;
 
 	next_pts = 0;
@@ -942,25 +1027,28 @@ static void vvc1_local_init(void)
 
 	memset(&frm, 0, sizeof(frm));
 
-	for (i = 0; i < DECODE_BUFFER_NUM_MAX; i++)
-		vfbuf_use[i] = 0;
+	if (!is_reset) {
+		for (i = 0; i < DECODE_BUFFER_NUM_MAX; i++)
+			vfbuf_use[i] = 0;
 
-	INIT_KFIFO(display_q);
-	INIT_KFIFO(recycle_q);
-	INIT_KFIFO(newframe_q);
-	cur_pool_idx ^= 1;
-	for (i = 0; i < VF_POOL_SIZE; i++) {
-		const struct vframe_s *vf;
+		INIT_KFIFO(display_q);
+		INIT_KFIFO(recycle_q);
+		INIT_KFIFO(newframe_q);
+		cur_pool_idx ^= 1;
+		for (i = 0; i < VF_POOL_SIZE; i++) {
+			const struct vframe_s *vf;
 
-		if (cur_pool_idx == 0) {
-			vf = &vfpool[i];
-			vfpool[i].index = DECODE_BUFFER_NUM_MAX;
+			if (cur_pool_idx == 0) {
+				vf = &vfpool[i];
+				vfpool[i].index = DECODE_BUFFER_NUM_MAX;
 			} else {
-			vf = &vfpool2[i];
-			vfpool2[i].index = DECODE_BUFFER_NUM_MAX;
+				vf = &vfpool2[i];
+				vfpool2[i].index = DECODE_BUFFER_NUM_MAX;
 			}
-		kfifo_put(&newframe_q, (const struct vframe_s *)vf);
+			kfifo_put(&newframe_q, (const struct vframe_s *)vf);
+		}
 	}
+
 	if (mm_blk_handle) {
 		decoder_bmmu_box_free(mm_blk_handle);
 		mm_blk_handle = NULL;
@@ -980,7 +1068,7 @@ static void vvc1_ppmgr_reset(void)
 {
 	vf_notify_receiver(PROVIDER_NAME, VFRAME_EVENT_PROVIDER_RESET, NULL);
 
-	vvc1_local_init();
+	vvc1_local_init(true);
 
 	/* vf_notify_receiver(PROVIDER_NAME,
 	 * VFRAME_EVENT_PROVIDER_START,NULL);
@@ -1008,7 +1096,7 @@ static void error_do_work(struct work_struct *work)
 		vvc1_ppmgr_reset();
 #else
 		vf_light_unreg_provider(&vvc1_vf_prov);
-		vvc1_local_init();
+		vvc1_local_init(true);
 		vf_reg_provider(&vvc1_vf_prov);
 #endif
 		vvc1_prot_init();
@@ -1022,6 +1110,8 @@ static void vvc1_put_timer_func(unsigned long arg)
 
 	if (READ_VREG(VC1_SOS_COUNT) > 10)
 		schedule_work(&error_wd_work);
+
+	vc1_set_rp();
 
 	while (!kfifo_is_empty(&recycle_q) && (READ_VREG(VC1_BUFFERIN) == 0)) {
 		struct vframe_s *vf;
@@ -1062,7 +1152,7 @@ static s32 vvc1_init(void)
 	intra_output = 0;
 	amvdec_enable();
 
-	vvc1_local_init();
+	vvc1_local_init(false);
 
 	if (vvc1_amstream_dec_info.format == VIDEO_DEC_FORMAT_WMV3) {
 		pr_info("WMV3 dec format\n");
@@ -1087,7 +1177,7 @@ static s32 vvc1_init(void)
 		amvdec_disable();
 		vfree(buf);
 		pr_err("VC1: the %s fw loading failed, err: %x\n",
-			tee_enabled() ? "TEE" : "local", ret);
+			vdec_tee_enabled() ? "TEE" : "local", ret);
 		return -EBUSY;
 	}
 
@@ -1101,7 +1191,7 @@ static s32 vvc1_init(void)
 		return ret;
 
 	if (vdec_request_irq(VDEC_IRQ_1, vvc1_isr,
-		    "vvc1-irq", (void *)vvc1_dec_id)) {
+			"vvc1-irq", (void *)vvc1_dec_id)) {
 		amvdec_disable();
 
 		pr_info("vvc1 irq register error.\n");
@@ -1168,11 +1258,13 @@ static int amvdec_vc1_probe(struct platform_device *pdev)
 	pdata->dec_status = vvc1_dec_status;
 	pdata->set_isreset = vvc1_set_isreset;
 	is_reset = 0;
+	vdec = pdata;
 
 	vvc1_vdec_info_init();
 
 	INIT_WORK(&error_wd_work, error_do_work);
 	INIT_WORK(&set_clk_work, vvc1_set_clk);
+	spin_lock_init(&vc1_rp_lock);
 	if (vvc1_init() < 0) {
 		pr_info("amvdec_vc1 init failed.\n");
 		kfree(gvs);
@@ -1215,6 +1307,9 @@ static int amvdec_vc1_remove(struct platform_device *pdev)
 
 	amvdec_disable();
 
+	if (get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_TM2)
+		vdec_reset_core(NULL);
+
 	if (mm_blk_handle) {
 		decoder_bmmu_box_free(mm_blk_handle);
 		mm_blk_handle = NULL;
@@ -1229,6 +1324,7 @@ static int amvdec_vc1_remove(struct platform_device *pdev)
 #endif
 	kfree(gvs);
 	gvs = NULL;
+	vdec = NULL;
 
 	return 0;
 }
@@ -1293,6 +1389,8 @@ static void __exit amvdec_vc1_driver_remove_module(void)
 
 	platform_driver_unregister(&amvdec_vc1_driver);
 }
+module_param(unstable_pts_debug, uint, 0664);
+MODULE_PARM_DESC(unstable_pts_debug, "\n amvdec_vc1 unstable_pts\n");
 
 /****************************************/
 module_init(amvdec_vc1_driver_init_module);

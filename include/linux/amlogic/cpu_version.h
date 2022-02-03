@@ -39,6 +39,13 @@
 #define MESON_CPU_MAJOR_ID_TL1		0x2E
 #define MESON_CPU_MAJOR_ID_TM2		0x2F
 
+#define MESON_CPU_MAJOR_ID_SC2		0x32
+#define MESON_CPU_MAJOR_ID_T5           0x34
+#define MESON_CPU_MAJOR_ID_T5D          0x35
+#define MESON_CPU_MAJOR_ID_T7           0x36
+#define MESON_CPU_MAJOR_ID_S4           0x37
+
+
 #define MESON_CPU_VERSION_LVL_MAJOR	0
 #define MESON_CPU_VERSION_LVL_MINOR	1
 #define MESON_CPU_VERSION_LVL_PACK	2
@@ -87,6 +94,12 @@ static inline bool package_id_is(unsigned int id)
 static inline bool is_meson_m8b_cpu(void)
 {
 	return get_cpu_type() == MESON_CPU_MAJOR_ID_M8B;
+}
+
+
+static inline bool is_meson_t5d_cpu(void)
+{
+        return get_cpu_type() == MESON_CPU_MAJOR_ID_T5D;
 }
 
 static inline bool is_meson_gxbb_cpu(void)
